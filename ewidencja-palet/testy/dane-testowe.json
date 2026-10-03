@@ -1,0 +1,1807 @@
+{
+ "couriers": {
+  "dpd": {
+   "name": "DPD",
+   "order": 1,
+   "color": "#DC0032",
+   "custom": false
+  },
+  "inpost": {
+   "name": "InPost",
+   "order": 2,
+   "color": "#FFC400",
+   "custom": false,
+   "openingWydane": 20,
+   "openingZwrot": 5
+  },
+  "dhl": {
+   "name": "DHL",
+   "order": 3,
+   "color": "#FFCC00",
+   "custom": false
+  },
+  "gls": {
+   "name": "GLS",
+   "order": 4,
+   "color": "#1B2A4A",
+   "custom": false,
+   "enabled": false
+  }
+ },
+ "transactions": {
+  "t0001": {
+   "data": "2026-08-03",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000001000,
+   "uwagi": ""
+  },
+  "t0002": {
+   "data": "2026-08-03",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000002000,
+   "uwagi": ""
+  },
+  "t0003": {
+   "data": "2026-08-03",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000003000,
+   "uwagi": ""
+  },
+  "t0004": {
+   "data": "2026-08-03",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 12,
+   "createdAt": 1785000004000,
+   "uwagi": "test"
+  },
+  "t0005": {
+   "data": "2026-08-04",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000005000,
+   "uwagi": ""
+  },
+  "t0006": {
+   "data": "2026-08-04",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 6,
+   "createdAt": 1785000006000,
+   "uwagi": "test"
+  },
+  "t0007": {
+   "data": "2026-08-04",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000007000,
+   "uwagi": ""
+  },
+  "t0008": {
+   "data": "2026-08-04",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000008000,
+   "uwagi": ""
+  },
+  "t0009": {
+   "data": "2026-08-04",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 3,
+   "createdAt": 1785000009000,
+   "uwagi": "test"
+  },
+  "t0010": {
+   "data": "2026-08-05",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 5,
+   "createdAt": 1785000010000,
+   "uwagi": ""
+  },
+  "t0011": {
+   "data": "2026-08-05",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 2,
+   "createdAt": 1785000011000,
+   "uwagi": "test"
+  },
+  "t0012": {
+   "data": "2026-08-05",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000012000,
+   "uwagi": ""
+  },
+  "t0013": {
+   "data": "2026-08-05",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000013000,
+   "uwagi": ""
+  },
+  "t0014": {
+   "data": "2026-08-05",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000014000,
+   "uwagi": "test"
+  },
+  "t0015": {
+   "data": "2026-08-06",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000015000,
+   "uwagi": ""
+  },
+  "t0016": {
+   "data": "2026-08-06",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 12,
+   "createdAt": 1785000016000,
+   "uwagi": "test"
+  },
+  "t0017": {
+   "data": "2026-08-06",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000017000,
+   "uwagi": ""
+  },
+  "t0018": {
+   "data": "2026-08-06",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000018000,
+   "uwagi": ""
+  },
+  "t0019": {
+   "data": "2026-08-06",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000019000,
+   "uwagi": "test"
+  },
+  "t0020": {
+   "data": "2026-08-07",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000020000,
+   "uwagi": ""
+  },
+  "t0021": {
+   "data": "2026-08-07",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 1,
+   "createdAt": 1785000021000,
+   "uwagi": "test"
+  },
+  "t0022": {
+   "data": "2026-08-07",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 6,
+   "createdAt": 1785000022000,
+   "uwagi": ""
+  },
+  "t0023": {
+   "data": "2026-08-07",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000023000,
+   "uwagi": ""
+  },
+  "t0024": {
+   "data": "2026-08-07",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 8,
+   "createdAt": 1785000024000,
+   "uwagi": "test"
+  },
+  "t0025": {
+   "data": "2026-08-10",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000025000,
+   "uwagi": ""
+  },
+  "t0026": {
+   "data": "2026-08-10",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000026000,
+   "uwagi": "test"
+  },
+  "t0027": {
+   "data": "2026-08-10",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000027000,
+   "uwagi": ""
+  },
+  "t0028": {
+   "data": "2026-08-10",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000028000,
+   "uwagi": ""
+  },
+  "t0029": {
+   "data": "2026-08-10",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000029000,
+   "uwagi": "test"
+  },
+  "t0030": {
+   "data": "2026-08-11",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000030000,
+   "uwagi": ""
+  },
+  "t0031": {
+   "data": "2026-08-11",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 7,
+   "createdAt": 1785000031000,
+   "uwagi": "test"
+  },
+  "t0032": {
+   "data": "2026-08-11",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000032000,
+   "uwagi": ""
+  },
+  "t0033": {
+   "data": "2026-08-11",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000033000,
+   "uwagi": ""
+  },
+  "t0034": {
+   "data": "2026-08-11",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 1,
+   "createdAt": 1785000034000,
+   "uwagi": "test"
+  },
+  "t0035": {
+   "data": "2026-08-12",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000035000,
+   "uwagi": ""
+  },
+  "t0036": {
+   "data": "2026-08-12",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000036000,
+   "uwagi": "test"
+  },
+  "t0037": {
+   "data": "2026-08-12",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000037000,
+   "uwagi": ""
+  },
+  "t0038": {
+   "data": "2026-08-12",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000038000,
+   "uwagi": ""
+  },
+  "t0039": {
+   "data": "2026-08-13",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000039000,
+   "uwagi": ""
+  },
+  "t0040": {
+   "data": "2026-08-13",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 6,
+   "createdAt": 1785000040000,
+   "uwagi": "test"
+  },
+  "t0041": {
+   "data": "2026-08-13",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000041000,
+   "uwagi": ""
+  },
+  "t0042": {
+   "data": "2026-08-13",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000042000,
+   "uwagi": ""
+  },
+  "t0043": {
+   "data": "2026-08-13",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 12,
+   "createdAt": 1785000043000,
+   "uwagi": "test"
+  },
+  "t0044": {
+   "data": "2026-08-14",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000044000,
+   "uwagi": ""
+  },
+  "t0045": {
+   "data": "2026-08-14",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 8,
+   "createdAt": 1785000045000,
+   "uwagi": "test"
+  },
+  "t0046": {
+   "data": "2026-08-14",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000046000,
+   "uwagi": ""
+  },
+  "t0047": {
+   "data": "2026-08-14",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000047000,
+   "uwagi": ""
+  },
+  "t0048": {
+   "data": "2026-08-14",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 9,
+   "createdAt": 1785000048000,
+   "uwagi": "test"
+  },
+  "t0049": {
+   "data": "2026-08-17",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000049000,
+   "uwagi": ""
+  },
+  "t0050": {
+   "data": "2026-08-17",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 2,
+   "createdAt": 1785000050000,
+   "uwagi": "test"
+  },
+  "t0051": {
+   "data": "2026-08-17",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000051000,
+   "uwagi": ""
+  },
+  "t0052": {
+   "data": "2026-08-17",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000052000,
+   "uwagi": ""
+  },
+  "t0053": {
+   "data": "2026-08-17",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 4,
+   "createdAt": 1785000053000,
+   "uwagi": "test"
+  },
+  "t0054": {
+   "data": "2026-08-18",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000054000,
+   "uwagi": ""
+  },
+  "t0055": {
+   "data": "2026-08-18",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 8,
+   "createdAt": 1785000055000,
+   "uwagi": "test"
+  },
+  "t0056": {
+   "data": "2026-08-18",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000056000,
+   "uwagi": ""
+  },
+  "t0057": {
+   "data": "2026-08-18",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000057000,
+   "uwagi": ""
+  },
+  "t0058": {
+   "data": "2026-08-18",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 8,
+   "createdAt": 1785000058000,
+   "uwagi": "test"
+  },
+  "t0059": {
+   "data": "2026-08-19",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000059000,
+   "uwagi": ""
+  },
+  "t0060": {
+   "data": "2026-08-19",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 4,
+   "createdAt": 1785000060000,
+   "uwagi": "test"
+  },
+  "t0061": {
+   "data": "2026-08-19",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000061000,
+   "uwagi": ""
+  },
+  "t0062": {
+   "data": "2026-08-19",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000062000,
+   "uwagi": ""
+  },
+  "t0063": {
+   "data": "2026-08-19",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 14,
+   "createdAt": 1785000063000,
+   "uwagi": "test"
+  },
+  "t0064": {
+   "data": "2026-08-20",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 6,
+   "createdAt": 1785000064000,
+   "uwagi": ""
+  },
+  "t0065": {
+   "data": "2026-08-20",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 6,
+   "createdAt": 1785000065000,
+   "uwagi": "test"
+  },
+  "t0066": {
+   "data": "2026-08-20",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000066000,
+   "uwagi": ""
+  },
+  "t0067": {
+   "data": "2026-08-20",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000067000,
+   "uwagi": ""
+  },
+  "t0068": {
+   "data": "2026-08-21",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000068000,
+   "uwagi": ""
+  },
+  "t0069": {
+   "data": "2026-08-21",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 9,
+   "createdAt": 1785000069000,
+   "uwagi": "test"
+  },
+  "t0070": {
+   "data": "2026-08-21",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 6,
+   "createdAt": 1785000070000,
+   "uwagi": ""
+  },
+  "t0071": {
+   "data": "2026-08-21",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000071000,
+   "uwagi": ""
+  },
+  "t0072": {
+   "data": "2026-08-21",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 11,
+   "createdAt": 1785000072000,
+   "uwagi": "test"
+  },
+  "t0073": {
+   "data": "2026-08-24",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000073000,
+   "uwagi": ""
+  },
+  "t0074": {
+   "data": "2026-08-24",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000074000,
+   "uwagi": ""
+  },
+  "t0075": {
+   "data": "2026-08-24",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 4,
+   "createdAt": 1785000075000,
+   "uwagi": ""
+  },
+  "t0076": {
+   "data": "2026-08-24",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 1,
+   "createdAt": 1785000076000,
+   "uwagi": "test"
+  },
+  "t0077": {
+   "data": "2026-08-25",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000077000,
+   "uwagi": ""
+  },
+  "t0078": {
+   "data": "2026-08-25",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 1,
+   "createdAt": 1785000078000,
+   "uwagi": "test"
+  },
+  "t0079": {
+   "data": "2026-08-25",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 4,
+   "createdAt": 1785000079000,
+   "uwagi": ""
+  },
+  "t0080": {
+   "data": "2026-08-25",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000080000,
+   "uwagi": ""
+  },
+  "t0081": {
+   "data": "2026-08-25",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000081000,
+   "uwagi": "test"
+  },
+  "t0082": {
+   "data": "2026-08-26",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000082000,
+   "uwagi": ""
+  },
+  "t0083": {
+   "data": "2026-08-26",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 6,
+   "createdAt": 1785000083000,
+   "uwagi": "test"
+  },
+  "t0084": {
+   "data": "2026-08-26",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000084000,
+   "uwagi": ""
+  },
+  "t0085": {
+   "data": "2026-08-26",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000085000,
+   "uwagi": ""
+  },
+  "t0086": {
+   "data": "2026-08-26",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 9,
+   "createdAt": 1785000086000,
+   "uwagi": "test"
+  },
+  "t0087": {
+   "data": "2026-08-27",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000087000,
+   "uwagi": ""
+  },
+  "t0088": {
+   "data": "2026-08-27",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 6,
+   "createdAt": 1785000088000,
+   "uwagi": ""
+  },
+  "t0089": {
+   "data": "2026-08-27",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000089000,
+   "uwagi": ""
+  },
+  "t0090": {
+   "data": "2026-08-27",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 11,
+   "createdAt": 1785000090000,
+   "uwagi": "test"
+  },
+  "t0091": {
+   "data": "2026-08-28",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000091000,
+   "uwagi": ""
+  },
+  "t0092": {
+   "data": "2026-08-28",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 5,
+   "createdAt": 1785000092000,
+   "uwagi": ""
+  },
+  "t0093": {
+   "data": "2026-08-28",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 4,
+   "createdAt": 1785000093000,
+   "uwagi": ""
+  },
+  "t0094": {
+   "data": "2026-08-28",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 3,
+   "createdAt": 1785000094000,
+   "uwagi": "test"
+  },
+  "t0095": {
+   "data": "2026-08-31",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 5,
+   "createdAt": 1785000095000,
+   "uwagi": ""
+  },
+  "t0096": {
+   "data": "2026-08-31",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 5,
+   "createdAt": 1785000096000,
+   "uwagi": "test"
+  },
+  "t0097": {
+   "data": "2026-08-31",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000097000,
+   "uwagi": ""
+  },
+  "t0098": {
+   "data": "2026-08-31",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000098000,
+   "uwagi": ""
+  },
+  "t0099": {
+   "data": "2026-08-31",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 9,
+   "createdAt": 1785000099000,
+   "uwagi": "test"
+  },
+  "t0100": {
+   "data": "2026-09-01",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000100000,
+   "uwagi": ""
+  },
+  "t0101": {
+   "data": "2026-09-01",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 1,
+   "createdAt": 1785000101000,
+   "uwagi": "test"
+  },
+  "t0102": {
+   "data": "2026-09-01",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000102000,
+   "uwagi": ""
+  },
+  "t0103": {
+   "data": "2026-09-01",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000103000,
+   "uwagi": ""
+  },
+  "t0104": {
+   "data": "2026-09-01",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000104000,
+   "uwagi": "test"
+  },
+  "t0105": {
+   "data": "2026-09-02",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000105000,
+   "uwagi": ""
+  },
+  "t0106": {
+   "data": "2026-09-02",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000106000,
+   "uwagi": ""
+  },
+  "t0107": {
+   "data": "2026-09-02",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000107000,
+   "uwagi": ""
+  },
+  "t0108": {
+   "data": "2026-09-02",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 12,
+   "createdAt": 1785000108000,
+   "uwagi": "test"
+  },
+  "t0109": {
+   "data": "2026-09-03",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000109000,
+   "uwagi": ""
+  },
+  "t0110": {
+   "data": "2026-09-03",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000110000,
+   "uwagi": ""
+  },
+  "t0111": {
+   "data": "2026-09-03",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000111000,
+   "uwagi": ""
+  },
+  "t0112": {
+   "data": "2026-09-04",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000112000,
+   "uwagi": ""
+  },
+  "t0113": {
+   "data": "2026-09-04",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 5,
+   "createdAt": 1785000113000,
+   "uwagi": "test"
+  },
+  "t0114": {
+   "data": "2026-09-04",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000114000,
+   "uwagi": ""
+  },
+  "t0115": {
+   "data": "2026-09-04",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000115000,
+   "uwagi": ""
+  },
+  "t0116": {
+   "data": "2026-09-04",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 9,
+   "createdAt": 1785000116000,
+   "uwagi": "test"
+  },
+  "t0117": {
+   "data": "2026-09-07",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 5,
+   "createdAt": 1785000117000,
+   "uwagi": ""
+  },
+  "t0118": {
+   "data": "2026-09-07",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 4,
+   "createdAt": 1785000118000,
+   "uwagi": "test"
+  },
+  "t0119": {
+   "data": "2026-09-07",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000119000,
+   "uwagi": ""
+  },
+  "t0120": {
+   "data": "2026-09-07",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 4,
+   "createdAt": 1785000120000,
+   "uwagi": ""
+  },
+  "t0121": {
+   "data": "2026-09-07",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 4,
+   "createdAt": 1785000121000,
+   "uwagi": "test"
+  },
+  "t0122": {
+   "data": "2026-09-08",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000122000,
+   "uwagi": ""
+  },
+  "t0123": {
+   "data": "2026-09-08",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 2,
+   "createdAt": 1785000123000,
+   "uwagi": "test"
+  },
+  "t0124": {
+   "data": "2026-09-08",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000124000,
+   "uwagi": ""
+  },
+  "t0125": {
+   "data": "2026-09-08",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000125000,
+   "uwagi": ""
+  },
+  "t0126": {
+   "data": "2026-09-09",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000126000,
+   "uwagi": ""
+  },
+  "t0127": {
+   "data": "2026-09-09",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000127000,
+   "uwagi": "test"
+  },
+  "t0128": {
+   "data": "2026-09-09",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 11,
+   "createdAt": 1785000128000,
+   "uwagi": ""
+  },
+  "t0129": {
+   "data": "2026-09-09",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000129000,
+   "uwagi": ""
+  },
+  "t0130": {
+   "data": "2026-09-09",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 6,
+   "createdAt": 1785000130000,
+   "uwagi": "test"
+  },
+  "t0131": {
+   "data": "2026-09-10",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000131000,
+   "uwagi": ""
+  },
+  "t0132": {
+   "data": "2026-09-10",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 4,
+   "createdAt": 1785000132000,
+   "uwagi": "test"
+  },
+  "t0133": {
+   "data": "2026-09-10",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000133000,
+   "uwagi": ""
+  },
+  "t0134": {
+   "data": "2026-09-10",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000134000,
+   "uwagi": ""
+  },
+  "t0135": {
+   "data": "2026-09-11",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000135000,
+   "uwagi": ""
+  },
+  "t0136": {
+   "data": "2026-09-11",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 7,
+   "createdAt": 1785000136000,
+   "uwagi": "test"
+  },
+  "t0137": {
+   "data": "2026-09-11",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 3,
+   "createdAt": 1785000137000,
+   "uwagi": ""
+  },
+  "t0138": {
+   "data": "2026-09-11",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 4,
+   "createdAt": 1785000138000,
+   "uwagi": ""
+  },
+  "t0139": {
+   "data": "2026-09-11",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 2,
+   "createdAt": 1785000139000,
+   "uwagi": "test"
+  },
+  "t0140": {
+   "data": "2026-09-14",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000140000,
+   "uwagi": ""
+  },
+  "t0141": {
+   "data": "2026-09-14",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 12,
+   "createdAt": 1785000141000,
+   "uwagi": "test"
+  },
+  "t0142": {
+   "data": "2026-09-14",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000142000,
+   "uwagi": ""
+  },
+  "t0143": {
+   "data": "2026-09-14",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000143000,
+   "uwagi": ""
+  },
+  "t0144": {
+   "data": "2026-09-14",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 1,
+   "createdAt": 1785000144000,
+   "uwagi": "test"
+  },
+  "t0145": {
+   "data": "2026-09-15",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 4,
+   "createdAt": 1785000145000,
+   "uwagi": ""
+  },
+  "t0146": {
+   "data": "2026-09-15",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 4,
+   "createdAt": 1785000146000,
+   "uwagi": "test"
+  },
+  "t0147": {
+   "data": "2026-09-15",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000147000,
+   "uwagi": ""
+  },
+  "t0148": {
+   "data": "2026-09-15",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000148000,
+   "uwagi": ""
+  },
+  "t0149": {
+   "data": "2026-09-15",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000149000,
+   "uwagi": "test"
+  },
+  "t0150": {
+   "data": "2026-09-16",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000150000,
+   "uwagi": ""
+  },
+  "t0151": {
+   "data": "2026-09-16",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000151000,
+   "uwagi": ""
+  },
+  "t0152": {
+   "data": "2026-09-16",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000152000,
+   "uwagi": ""
+  },
+  "t0153": {
+   "data": "2026-09-17",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000153000,
+   "uwagi": ""
+  },
+  "t0154": {
+   "data": "2026-09-17",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000154000,
+   "uwagi": ""
+  },
+  "t0155": {
+   "data": "2026-09-17",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000155000,
+   "uwagi": ""
+  },
+  "t0156": {
+   "data": "2026-09-18",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000156000,
+   "uwagi": ""
+  },
+  "t0157": {
+   "data": "2026-09-18",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 6,
+   "createdAt": 1785000157000,
+   "uwagi": "test"
+  },
+  "t0158": {
+   "data": "2026-09-18",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000158000,
+   "uwagi": ""
+  },
+  "t0159": {
+   "data": "2026-09-18",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 5,
+   "createdAt": 1785000159000,
+   "uwagi": ""
+  },
+  "t0160": {
+   "data": "2026-09-21",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000160000,
+   "uwagi": ""
+  },
+  "t0161": {
+   "data": "2026-09-21",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 5,
+   "createdAt": 1785000161000,
+   "uwagi": ""
+  },
+  "t0162": {
+   "data": "2026-09-21",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 10,
+   "createdAt": 1785000162000,
+   "uwagi": ""
+  },
+  "t0163": {
+   "data": "2026-09-21",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 10,
+   "createdAt": 1785000163000,
+   "uwagi": "test"
+  },
+  "t0164": {
+   "data": "2026-09-22",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000164000,
+   "uwagi": ""
+  },
+  "t0165": {
+   "data": "2026-09-22",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000165000,
+   "uwagi": ""
+  },
+  "t0166": {
+   "data": "2026-09-22",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 6,
+   "createdAt": 1785000166000,
+   "uwagi": ""
+  },
+  "t0167": {
+   "data": "2026-09-22",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 4,
+   "createdAt": 1785000167000,
+   "uwagi": "test"
+  },
+  "t0168": {
+   "data": "2026-09-23",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000168000,
+   "uwagi": ""
+  },
+  "t0169": {
+   "data": "2026-09-23",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000169000,
+   "uwagi": ""
+  },
+  "t0170": {
+   "data": "2026-09-23",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000170000,
+   "uwagi": ""
+  },
+  "t0171": {
+   "data": "2026-09-24",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 7,
+   "createdAt": 1785000171000,
+   "uwagi": ""
+  },
+  "t0172": {
+   "data": "2026-09-24",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 7,
+   "createdAt": 1785000172000,
+   "uwagi": "test"
+  },
+  "t0173": {
+   "data": "2026-09-24",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 5,
+   "createdAt": 1785000173000,
+   "uwagi": ""
+  },
+  "t0174": {
+   "data": "2026-09-24",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000174000,
+   "uwagi": ""
+  },
+  "t0175": {
+   "data": "2026-09-24",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 8,
+   "createdAt": 1785000175000,
+   "uwagi": "test"
+  },
+  "t0176": {
+   "data": "2026-09-25",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000176000,
+   "uwagi": ""
+  },
+  "t0177": {
+   "data": "2026-09-25",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 9,
+   "createdAt": 1785000177000,
+   "uwagi": "test"
+  },
+  "t0178": {
+   "data": "2026-09-25",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000178000,
+   "uwagi": ""
+  },
+  "t0179": {
+   "data": "2026-09-25",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000179000,
+   "uwagi": ""
+  },
+  "t0180": {
+   "data": "2026-09-25",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 12,
+   "createdAt": 1785000180000,
+   "uwagi": "test"
+  },
+  "t0181": {
+   "data": "2026-09-28",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 12,
+   "createdAt": 1785000181000,
+   "uwagi": ""
+  },
+  "t0182": {
+   "data": "2026-09-28",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 9,
+   "createdAt": 1785000182000,
+   "uwagi": "test"
+  },
+  "t0183": {
+   "data": "2026-09-28",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000183000,
+   "uwagi": ""
+  },
+  "t0184": {
+   "data": "2026-09-28",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000184000,
+   "uwagi": ""
+  },
+  "t0185": {
+   "data": "2026-09-29",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 9,
+   "createdAt": 1785000185000,
+   "uwagi": ""
+  },
+  "t0186": {
+   "data": "2026-09-29",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000186000,
+   "uwagi": ""
+  },
+  "t0187": {
+   "data": "2026-09-29",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000187000,
+   "uwagi": ""
+  },
+  "t0188": {
+   "data": "2026-09-29",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 14,
+   "createdAt": 1785000188000,
+   "uwagi": "test"
+  },
+  "t0189": {
+   "data": "2026-09-30",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 14,
+   "createdAt": 1785000189000,
+   "uwagi": ""
+  },
+  "t0190": {
+   "data": "2026-09-30",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000190000,
+   "uwagi": ""
+  },
+  "t0191": {
+   "data": "2026-09-30",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 8,
+   "createdAt": 1785000191000,
+   "uwagi": ""
+  },
+  "t0192": {
+   "data": "2026-09-30",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 8,
+   "createdAt": 1785000192000,
+   "uwagi": "test"
+  },
+  "t0193": {
+   "data": "2026-10-01",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "wydanie",
+   "ilosc": 13,
+   "createdAt": 1785000193000,
+   "uwagi": ""
+  },
+  "t0194": {
+   "data": "2026-10-01",
+   "kurierId": "dpd",
+   "kurierNazwa": "DPD",
+   "typ": "zwrot",
+   "ilosc": 12,
+   "createdAt": 1785000194000,
+   "uwagi": "test"
+  },
+  "t0195": {
+   "data": "2026-10-01",
+   "kurierId": "dhl",
+   "kurierNazwa": "DHL",
+   "typ": "wydanie",
+   "ilosc": 2,
+   "createdAt": 1785000195000,
+   "uwagi": ""
+  },
+  "t0196": {
+   "data": "2026-10-01",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "wydanie",
+   "ilosc": 4,
+   "createdAt": 1785000196000,
+   "uwagi": ""
+  },
+  "t0197": {
+   "data": "2026-10-01",
+   "kurierId": "inpost",
+   "kurierNazwa": "InPost",
+   "typ": "zwrot",
+   "ilosc": 1,
+   "createdAt": 1785000197000,
+   "uwagi": "test"
+  }
+ },
+ "meta": {}
+}
