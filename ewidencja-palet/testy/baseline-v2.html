@@ -609,14 +609,7 @@ function fmt1(n){ return new Intl.NumberFormat('pl-PL',{maximumFractionDigits:1}
 function txCourierName(t){ const c = courierById(t.kurierId); return c ? c.name : (t.kurierNazwa||'(usunięty)'); }
 function daysBetween(a,b){ return Math.round((new Date(b+'T00:00:00')-new Date(a+'T00:00:00'))/86400000); }
 function pctChange(cur, prev){ return prev>0 ? Math.round((cur-prev)/prev*100) : null; }
-function pctLabel(cur, prev){
-  if(prev===0) return cur>0 ? 'wzrost od zera' : 'bez zmian';
-  const raw = (cur-prev)/prev*100;
-  if(raw===0) return 'bez zmian';
-  const shown = Math.abs(raw)<1 ? fmt1(raw) : String(Math.round(raw));
-  return `${raw>0?'+':''}${shown}%`;
-}
-function pctText(v){ if(v===null || !Number.isFinite(v)) return '—'; if(v>0 && v<1) return '<1%'; if(v>99 && v<100) return '>99%'; return Math.round(v)+'%'; }
+function pctLabel(cur, prev){ const p = pctChange(cur, prev); return p===null ? 'brak danych do porównania' : `${p>0?'+':''}${p}%`; }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function courierById(id){ return couriers.find(c=>c.id===id); }
 function isEnabled(c){ return c.enabled !== false; }
@@ -625,12 +618,11 @@ function slugify(name){
 }
 function weekStart(dateStr){ const dt = new Date(dateStr+'T00:00:00'); const day = (dt.getDay()+6)%7; dt.setDate(dt.getDate()-day); return dt; }
 function addDays(dateStr,n){ const d=new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n); return toKey(d); }
-function weekLabel(mondayStr, withYear){
+function weekLabel(mondayStr){
   const m = new Date(mondayStr+'T00:00:00'); const s=new Date(m); const e=new Date(m); e.setDate(e.getDate()+6);
   const fmt=(d)=>`${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}`;
-  return `${fmt(s)}–${fmt(e)}${withYear ? '.'+e.getFullYear() : ''}`;
+  return `${fmt(s)}–${fmt(e)}`;
 }
-function rangeLabel(from, to){ const f=(x)=>`${x.slice(8,10)}.${x.slice(5,7)}`; return `${f(from)}–${f(to)}`; }
 function weekLabelShort(mondayStr){
   const m = new Date(mondayStr+'T00:00:00');
   return `${String(m.getDate()).padStart(2,'0')}.${String(m.getMonth()+1).padStart(2,'0')}`;
@@ -726,104 +718,45 @@ function runtimeInfo(){
 // numbering only for operations saved before numbers were stored, and is used once to freeze them.
 function docketPrefix(typ){ return typ==='wydanie' ? 'WZ' : 'PZ'; }
 function docketNum(nr){ const m = /^(WZ|PZ)-(\d+)$/.exec(nr||''); return m ? parseInt(m[2],10) : 0; }
-function hasValidNr(t){ return typeof t.nr==='string' && /^(WZ|PZ)-\d+$/.test(t.nr) && t.nr.startsWith(docketPrefix(t.typ)); }
-function padNr(typ, n){ return `${docketPrefix(typ)}-${String(n).padStart(5,'0')}`; }
 function legacyDocketMap(){
   const sorted = [...transactions].sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
   const counts = {wydanie:0, zwrot:0}; const map = {};
   for(const t of sorted){
     counts[t.typ] = (counts[t.typ]||0)+1;
-    map[t.id] = padNr(t.typ, counts[t.typ]);
+    map[t.id] = `${docketPrefix(t.typ)}-${String(counts[t.typ]).padStart(5,'0')}`;
   }
   return map;
 }
 function buildDocketMap(){
   const legacy = legacyDocketMap(); const map = {};
-  for(const t of transactions) map[t.id] = hasValidNr(t) ? t.nr : legacy[t.id];
+  for(const t of transactions) map[t.id] = (t.nr && t.nr.startsWith(docketPrefix(t.typ))) ? t.nr : legacy[t.id];
   return map;
 }
-function nextDocketNumber(typ, stored){
+function nextDocketNumber(typ){
   const key = typ==='wydanie' ? 'wz' : 'pz';
   const map = buildDocketMap();
-  let max = Math.max((counters && counters[key]) || 0, (stored && stored[key]) || 0);
+  let max = (counters && counters[key]) || 0;
   for(const t of transactions){ if(t.typ===typ) max = Math.max(max, docketNum(map[t.id])); }
   return max+1;
 }
-// One device at a time hands out WZ/PZ numbers: a short cooperative lease on meta/numeracja (where
-// the store offers leases), and the counter is re-read right before it is moved — never written back
-// from a stale local copy, so one device can't lower the counter another just raised.
-const TAB_ID = 'tab-' + Math.random().toString(36).slice(2, 10);
-async function withNumberingLock(fn){
-  const lock = db.doc('meta/numeracja');
-  if(typeof lock.acquire !== 'function') return fn();
-  for(let i=0; i<25; i++){
-    let res = null;
-    try{ res = await lock.acquire({holder:TAB_ID, ttlMs:2500}); }catch(e){ console.warn('lease', e); return fn(); }
-    if(res && res.acquired) return fn();
-    await new Promise(r=>setTimeout(r, 200 + i*60));
-  }
-  throw Object.assign(new Error('Numeracja dokumentów jest zajęta — spróbuj ponownie.'), {code:'busy'});
-}
-async function readCounters(){
-  const snap = await db.doc('meta/counters').get();
-  return {exists: snap.exists, data: snap.exists ? (snap.data()||{}) : {}};
-}
-async function writeCounters(cur, patch){
-  if(cur.exists) await db.doc('meta/counters').update(patch);
-  else await db.doc('meta/counters').set({...cur.data, ...patch});
-  counters = {...(counters||{}), ...cur.data, ...patch};
-}
 async function allocDocket(typ){
   const key = typ==='wydanie' ? 'wz' : 'pz';
-  return withNumberingLock(async ()=>{
-    const cur = await readCounters();
-    const n = nextDocketNumber(typ, cur.data);
-    await writeCounters(cur, {[key]: n});
-    return padNr(typ, n);
-  });
-}
-// a failed save gives its number back, unless someone else has taken a later one meanwhile
-async function releaseDocket(nr){
-  const typ = nr.startsWith('WZ') ? 'wydanie' : 'zwrot', key = typ==='wydanie' ? 'wz' : 'pz', n = docketNum(nr);
-  try{ await withNumberingLock(async ()=>{ const cur = await readCounters(); if(cur.exists && cur.data[key]===n) await writeCounters(cur, {[key]: n-1}); }); }
-  catch(e){ console.warn('release', e); }
-}
-// safety net for stores without leases: if the same number landed on two operations, the later one
-// (by creation time) takes a fresh number
-async function ensureUniqueDocket(id, nr, typ){
-  try{
-    const snap = await db.collection('transactions').where('nr','==',nr).get();
-    if(snap.docs.length < 2) return nr;
-    const first = snap.docs.map(d=>({id:d.id, c:(d.data()||{}).createdAt||0})).sort((a,b)=> a.c-b.c || (a.id<b.id?-1:1))[0];
-    if(first.id === id) return nr;
-    const fresh = await allocDocket(typ);
-    await db.collection('transactions').doc(id).update({nr: fresh});
-    toast(`Numer ${nr} został równocześnie nadany na innym urządzeniu — ta operacja dostała numer ${fresh}.`);
-    return fresh;
-  }catch(e){ console.warn('unique check', e); return nr; }
+  const n = nextDocketNumber(typ);
+  counters = {...(counters||{}), [key]:n};
+  await db.doc('meta/counters').set(counters);
+  return `${docketPrefix(typ)}-${String(n).padStart(5,'0')}`;
 }
 async function migrateDockets(){
-  if(docketMigrationDone || !historyComplete || counters===null || !db) return;
+  if(docketMigrationDone || !historyComplete || counters===null) return;
   docketMigrationDone = true;
-  const missing = transactions.filter(t=>!hasValidNr(t)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  const map = buildDocketMap();
+  const missing = transactions.filter(t=> !(t.nr && t.nr.startsWith(docketPrefix(t.typ))));
+  migrating = missing.length>0;
   try{
-    await withNumberingLock(async ()=>{
-      const cur = await readCounters();
-      const legacy = legacyDocketMap();
-      const used = new Set(transactions.filter(hasValidNr).map(t=>t.nr));
-      const next = {wydanie: nextDocketNumber('wydanie', cur.data), zwrot: nextDocketNumber('zwrot', cur.data)};
-      migrating = missing.length>0;
-      for(const t of missing){
-        // keep the number people have already seen, unless a stored number uses it — then take the next free one
-        let nr = legacy[t.id];
-        if(used.has(nr)) nr = padNr(t.typ, next[t.typ]++);
-        used.add(nr);
-        await db.collection('transactions').doc(t.id).update({nr});
-      }
-      const maxOf = (prefix)=> Math.max(0, ...[...used].filter(x=>x.startsWith(prefix)).map(docketNum));
-      const target = {wz: Math.max(cur.data.wz||0, maxOf('WZ')), pz: Math.max(cur.data.pz||0, maxOf('PZ'))};
-      if(!cur.exists || cur.data.wz!==target.wz || cur.data.pz!==target.pz) await writeCounters(cur, target);
-    });
+    for(const t of missing){ await db.collection('transactions').doc(t.id).update({nr: map[t.id]}); }
+    const wz = Math.max((counters&&counters.wz)||0, ...transactions.filter(t=>t.typ==='wydanie').map(t=>docketNum(map[t.id])), 0);
+    const pz = Math.max((counters&&counters.pz)||0, ...transactions.filter(t=>t.typ==='zwrot').map(t=>docketNum(map[t.id])), 0);
+    if(!counters || counters.wz!==wz || counters.pz!==pz){ counters = {...(counters||{}), wz, pz}; await db.doc('meta/counters').set(counters); }
   }catch(e){ console.error(e); /* view-only viewers can't write; numbers still display from the computed fallback */ }
   if(migrating){ migrating = false; render(true); }
 }
@@ -840,23 +773,18 @@ function courierBadge(courier, size){
   if(!courier) return `<div class="badge-init" style="width:${size}px;height:${size}px;border-radius:8px;background:var(--panel-2);"></div>`;
   const logoSrc = courier.logoAssetId ? assetSrc(courier.logoAssetId) : DEFAULT_LOGOS[courier.id];
   if(logoSrc){
-    return `<img class="badge" src="${escapeHtml(logoSrc)}" alt="${escapeHtml(courier.name)}" style="width:${size}px;height:${size}px;background:#fff;padding:4px;border:1px solid var(--border);">`;
+    return `<img class="badge" src="${logoSrc}" alt="${escapeHtml(courier.name)}" style="width:${size}px;height:${size}px;background:#fff;padding:4px;border:1px solid var(--border);">`;
   }
-  const initials = Array.from((courier.name||'?').trim()).slice(0,2).join('').toUpperCase();
+  const initials = (courier.name||'?').trim().slice(0,2).toUpperCase();
   return `<div class="badge-init" style="width:${size}px;height:${size}px;border-radius:8px;background:${safeColor(courier.color)};font-size:${Math.round(size*0.4)}px;">${escapeHtml(initials)}</div>`;
 }
 
 /* ---------------------------- DB INIT ---------------------------- */
 async function initDb(){
-  const use = (name)=> (window.claude && typeof window.claude.use==='function')
-    ? Promise.resolve().then(()=>window.claude.use(name)).catch(e=>{ console.error(e); return null; })
-    : Promise.resolve(null);
-  db = await use('db');
-  downloadsApi = await use('downloads');
-  assetsApi = await use('assets');
+  db = await window.claude.use('db');
+  downloadsApi = await window.claude.use('downloads');
+  assetsApi = await window.claude.use('assets');
   if(!db){
-    document.getElementById('sidebarBalance').textContent = '—';
-    document.getElementById('mobileBalance').textContent = '—';
     document.getElementById('main').innerHTML = `
       <div class="empty" style="margin-top:60px;">
         ${ICONS.box}<h3>Brak połączenia z bazą danych</h3>
@@ -867,22 +795,14 @@ async function initDb(){
 
   db.collection('couriers').orderBy('order','asc').onSnapshot((snap)=>{
     couriers = snap.docs.map(d=>({id:d.id, ...d.data()}));
-    couriersLoaded = true;
-    if(!bulkWriting) render(true);
-    maybeSeed();
+    if(!couriersSeeded && couriers.length===0 && !bulkWriting){ couriersSeeded = true; seedCouriers(); }
+    else if(!bulkWriting) render(true);
   }, (err)=>{ console.error(err); toast('Błąd odczytu listy kurierów', true); });
 
-  db.doc('meta/settings').onSnapshot((snap)=>{
-    settings = snap.exists ? (snap.data()||{}) : {};
-    maybeSeed();
-  }, (err)=>{ console.error(err); settings = {}; maybeSeed(); });
-
-  // a failed read leaves counters === null: numbering and migration then wait instead of
-  // writing a lower counter over the stored one
   db.doc('meta/counters').onSnapshot((snap)=>{
     counters = snap.exists ? (snap.data()||{}) : {};
     migrateDockets();
-  }, (err)=>{ console.error(err); });
+  }, (err)=>{ console.error(err); counters = {}; });
 
   db.collection('transactions').orderBy('data','desc').limit(TX_WINDOW).onSnapshot((snap)=>{
     liveTx = snap.docs.map(d=>({id:d.id, ...d.data()}));
@@ -891,35 +811,15 @@ async function initDb(){
       if(minDate!==olderBoundary){ olderBoundary = minDate; historyComplete = false; loadOlderTransactions(minDate); }
     } else { olderTx.clear(); olderBoundary = null; historyComplete = true; }
     mergeTransactions();
-    txLoaded = true;
     if(!migrating && !bulkWriting) render(true);
-    if(!bulkWriting){ migrateDockets(); maybeSeed(); }
+    if(!bulkWriting) migrateDockets();
   }, (err)=>{ console.error(err); toast('Błąd odczytu historii operacji', true); });
-
-  // operations older than the live window are read once; refresh them when the page comes back
-  // into view and every few minutes, so edits/deletes of old entries made elsewhere show up
-  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshOlder(); });
-  setInterval(refreshOlder, 5*60*1000);
-}
-function refreshOlder(){ if(olderBoundary && historyComplete && !bulkWriting) loadOlderTransactions(olderBoundary); }
-
-// Default couriers are created once, for a brand-new empty database only — never again after the
-// user deletes them (meta/settings.seeded remembers it, across devices and reloads).
-let couriersLoaded = false, txLoaded = false, settings = null;
-async function maybeSeed(){
-  if(couriersSeeded || !couriersLoaded || !txLoaded || settings===null || bulkWriting) return;
-  couriersSeeded = true;
-  try{
-    if(settings.seeded) return;
-    if(couriers.length===0 && transactions.length===0 && invalidTx.length===0) await seedCouriers();
-    await db.doc('meta/settings').set({...settings, seeded:true});
-  }catch(e){ console.error(e); }
 }
 
 // Malformed operation documents (e.g. from a hand-edited import) are kept aside in invalidTx and
 // listed under "Kontrola danych" instead of breaking every date/number computation in the app.
 let invalidTx = [];
-function isValidTx(t){ return t && typeof t.data==='string' && /^\d{4}-\d{2}-\d{2}$/.test(t.data) && (t.typ==='wydanie' || t.typ==='zwrot') && Number.isFinite(t.ilosc) && typeof t.kurierId==='string' && /^[A-Za-z0-9_\-.~:@+]{1,200}$/.test(t.kurierId); }
+function isValidTx(t){ return t && typeof t.data==='string' && /^\d{4}-\d{2}-\d{2}$/.test(t.data) && (t.typ==='wydanie' || t.typ==='zwrot') && Number.isFinite(t.ilosc) && typeof t.kurierId==='string'; }
 function mergeTransactions(){
   const m = new Map(olderTx);
   for(const t of liveTx) m.set(t.id, t);
@@ -932,18 +832,17 @@ async function loadOlderTransactions(boundary){
   const token = ++olderLoadToken;
   const fetched = new Map();
   try{
-    let b = boundary, exhausted = false;
-    for(let guard=0; guard<500; guard++){
+    let b = boundary;
+    for(let guard=0; guard<20; guard++){
       const snap = await db.collection('transactions').where('data','<=',b).orderBy('data','desc').limit(TX_WINDOW).get();
       let added = 0;
       snap.docs.forEach(d=>{ if(!fetched.has(d.id)){ fetched.set(d.id, {id:d.id, ...d.data()}); added++; } });
-      if(snap.docs.length<TX_WINDOW || added===0){ exhausted = true; break; }
-      b = (snap.docs[snap.docs.length-1].data()||{}).data;
-      if(typeof b!=='string'){ exhausted = true; break; }
+      if(snap.docs.length<TX_WINDOW || added===0) break;
+      b = snap.docs[snap.docs.length-1].data();
+      b = b.data;
     }
     if(token!==olderLoadToken) return;
     olderTx = fetched; historyComplete = true;
-    if(!exhausted) toast('Historia jest bardzo duża — wczytano tylko część, sumy mogą być niepełne.', true);
   }catch(e){
     console.error(e);
     if(token===olderLoadToken) toast('Nie udało się wczytać starszej historii — sumy mogą być niepełne. Odśwież stronę.', true);
@@ -955,9 +854,7 @@ async function loadOlderTransactions(boundary){
 async function seedCouriers(){
   try{
     for(const c of DEFAULT_COURIERS){
-      const ref = db.collection('couriers').doc(c.id);
-      const cur = await ref.get();
-      if(!cur.exists) await ref.set({name:c.name, order:c.order, color:c.color, custom:false, enabled:true});
+      await db.collection('couriers').doc(c.id).set({name:c.name, order:c.order, color:c.color, custom:false, enabled:true});
     }
   }catch(e){ console.error(e); }
 }
@@ -1212,14 +1109,11 @@ function viewDashboard(){
 function viewNewOp(editId){
   const editing = editId ? transactions.find(t=>t.id===editId) : null;
   const preselect = editing ? editing.kurierId : (prefillCourierId||'');
-  const activeCouriers = couriers.filter(c=> isEnabled(c) || c.id===preselect);
+  const activeCouriers = couriers.filter(c=> isEnabled(c) || (editing && editing.kurierId===c.id));
   let courierOptions = activeCouriers.map(c=>`<option value="${c.id}" ${preselect===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('');
   // editing an operation of a since-deleted courier: keep it on that courier instead of silently
   // reassigning it to whichever courier happens to be first in the list
-  if(preselect && !courierById(preselect)){
-    const nm = editing ? (editing.kurierNazwa||editing.kurierId) : ((transactions.find(t=>t.kurierId===preselect)||{}).kurierNazwa || preselect);
-    courierOptions = `<option value="${escapeHtml(preselect)}" selected>${escapeHtml(nm)} (usunięty)</option>` + courierOptions;
-  }
+  if(editing && !courierById(editing.kurierId)) courierOptions = `<option value="${escapeHtml(editing.kurierId)}" selected>${escapeHtml(editing.kurierNazwa||editing.kurierId)} (usunięty)</option>` + courierOptions;
   const typSel = editing ? editing.typ : (prefillType || 'wydanie');
   const dateVal = editing ? editing.data : (prefillDate || todayStr());
   if(!editing){ prefillCourierId = null; prefillType = null; prefillDate = null; }
@@ -1286,12 +1180,7 @@ function viewNewOp(editId){
 /* ================================================================
    VIEW: HISTORIA
    ================================================================ */
-function historyCourierOptions(){
-  return courierBalances().map(b=>({id:b.courier.id, name:b.courier.name + (courierById(b.courier.id) ? '' : ' (usunięty)')}))
-    .sort((a,b)=>a.name.localeCompare(b.name,'pl'));
-}
 function filteredTransactions(){
-  if(historyFilters.kurier!=='all' && !historyCourierOptions().some(o=>o.id===historyFilters.kurier)) historyFilters.kurier = 'all';
   const f = historyFilters; const q = f.q.trim().toLowerCase();
   const docketMap = q ? buildDocketMap() : null;
   return transactions.filter(t=>{
@@ -1340,7 +1229,7 @@ function viewHistory(){
       </div>
       <div class="field">
         <label>Kurier</label>
-        <select id="fltKurier"><option value="all">Wszyscy</option>${historyCourierOptions().map(c=>`<option value="${escapeHtml(c.id)}" ${historyFilters.kurier===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
+        <select id="fltKurier"><option value="all">Wszyscy</option>${couriers.map(c=>`<option value="${c.id}" ${historyFilters.kurier===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
       </div>
       <div class="field">
         <label>Typ</label>
@@ -1394,28 +1283,23 @@ function chartWidth(){
 }
 function isNarrow(){ return window.innerWidth < 560; }
 
-function niceStep(span){
-  const raw = Math.max(1, span/4); const p = Math.pow(10, Math.floor(Math.log10(raw))); const f = raw/p;
-  return Math.max(1, (f<=1?1:f<=2?2:f<=5?5:10)*p);
-}
 function svgBarChartGrouped(labels, seriesA, seriesB, colorA, colorB, opts={}){
   const w = opts.width||chartWidth(), h = opts.height||230, padL=36, padB=28, padT=10, padR=8;
   const innerW = w-padL-padR, innerH = h-padT-padB;
-  const rawMax = Math.max(1, ...seriesA, ...seriesB); const tick = niceStep(rawMax); const max = tick*Math.ceil(rawMax/tick);
-  const nameA = opts.nameA||'Wydania', nameB = opts.nameB||'Zwroty';
+  const max = Math.max(1, ...seriesA, ...seriesB);
   const n = labels.length; const groupW = innerW/n; const barW = Math.min(16, groupW*0.34);
   const maxLabels = Math.max(3, Math.floor(w/56));
   let bars = '', gridLines = '', xLabels = '';
-  const steps = Math.round(max/tick);
+  const steps = 4;
   for(let i=0;i<=steps;i++){
-    const y = padT + innerH - (innerH*i/steps); const v = tick*i;
+    const y = padT + innerH - (innerH*i/steps); const v = Math.round(max*i/steps);
     gridLines += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
     gridLines += `<text x="${padL-6}" y="${y+4}" font-size="12.5" font-weight="600" text-anchor="end" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${v}</text>`;
   }
   labels.forEach((lab,i)=>{
     const cx = padL + groupW*i + groupW/2; const ah=(seriesA[i]/max)*innerH; const bh=(seriesB[i]/max)*innerH;
-    bars += `<rect x="${cx-barW-2}" y="${padT+innerH-ah}" width="${barW}" height="${ah}" rx="2" fill="${colorA}"><title>${lab} · ${nameA}: ${num(seriesA[i])}</title></rect>`;
-    bars += `<rect x="${cx+2}" y="${padT+innerH-bh}" width="${barW}" height="${bh}" rx="2" fill="${colorB}"><title>${lab} · ${nameB}: ${num(seriesB[i])}</title></rect>`;
+    bars += `<rect x="${cx-barW-2}" y="${padT+innerH-ah}" width="${barW}" height="${ah}" rx="2" fill="${colorA}"><title>${lab}: ${seriesA[i]}</title></rect>`;
+    bars += `<rect x="${cx+2}" y="${padT+innerH-bh}" width="${barW}" height="${bh}" rx="2" fill="${colorB}"><title>${lab}: ${seriesB[i]}</title></rect>`;
     if(n<=maxLabels || i%Math.ceil(n/maxLabels)===0) xLabels += `<text x="${cx}" y="${h-7}" font-size="12" font-weight="600" text-anchor="middle" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${lab}</text>`;
   });
   return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img">${gridLines}${bars}${xLabels}</svg>`;
@@ -1423,10 +1307,7 @@ function svgBarChartGrouped(labels, seriesA, seriesB, colorA, colorB, opts={}){
 function svgLineChart(labels, series, color, opts={}){
   const w = opts.width||chartWidth(), h = opts.height||200, padL=40, padB=28, padT=14, padR=10;
   const innerW = w-padL-padR, innerH = h-padT-padB;
-  const rawMax = Math.max(...series, 0), rawMin = Math.min(...series, 0);
-  const tick = niceStep((rawMax-rawMin)||1);
-  const maxV = tick*Math.ceil(rawMax/tick) || tick, minV = tick*Math.floor(rawMin/tick), range=(maxV-minV)||1, n=series.length;
-  const steps = Math.round(range/tick);
+  const maxV = Math.max(...series, 0), minV = Math.min(...series, 0), range=(maxV-minV)||1, n=series.length;
   const stepX = n>1? innerW/(n-1) : 0;
   const maxLabels = Math.max(3, Math.floor(w/60));
   const pts = series.map((v,i)=>[padL+stepX*i, padT+innerH-((v-minV)/range)*innerH]);
@@ -1434,8 +1315,8 @@ function svgLineChart(labels, series, color, opts={}){
   const path = pts.map((p,i)=> (i===0?'M':'L')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
   const area = `M${pts[0][0].toFixed(1)} ${zeroY.toFixed(1)} `+pts.map(p=>`L${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ')+` L${pts[pts.length-1][0].toFixed(1)} ${zeroY.toFixed(1)} Z`;
   let gridLines='', xLabels='';
-  for(let i=0;i<=steps;i++){
-    const y = padT + innerH*i/steps; const v = maxV - tick*i;
+  for(let i=0;i<=4;i++){
+    const y = padT + innerH*i/4; const v = Math.round(maxV - (range*i/4));
     gridLines += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
     gridLines += `<text x="${padL-6}" y="${y+4}" font-size="12.5" font-weight="600" text-anchor="end" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${v}</text>`;
   }
@@ -1445,7 +1326,7 @@ function svgLineChart(labels, series, color, opts={}){
     <line x1="${padL}" y1="${zeroY}" x2="${w-padR}" y2="${zeroY}" stroke="var(--text-faint)" stroke-width="1" stroke-dasharray="3 3"/>
     <path d="${area}" fill="${color}" opacity="0.14"/>
     <path d="${path}" fill="none" stroke="${color}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" style="filter:drop-shadow(0 0 5px ${color})"/>
-    ${pts.map((p,i)=>`<circle cx="${p[0]}" cy="${p[1]}" r="2.8" fill="${color}"><title>${labels[i]}: ${num(series[i])}</title></circle>`).join('')}
+    ${pts.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="2.8" fill="${color}"/>`).join('')}
     ${xLabels}
   </svg>`;
 }
@@ -1477,8 +1358,7 @@ function viewStats(){
   const sumZwrot = periodTx.filter(t=>t.typ==='zwrot').reduce((s,t)=>s+t.ilosc,0);
   const opsCount = periodTx.length;
   const avgPerOp = opsCount? (periodTx.reduce((s,t)=>s+t.ilosc,0)/opsCount) : 0;
-  const returnRate = sumWydane>0 ? (sumZwrot/sumWydane*100) : null;   // null = no issues in the period: rate undefined
-  const openingW = couriers.reduce((s,c)=>s+(c.openingWydane||0),0), openingZ = couriers.reduce((s,c)=>s+(c.openingZwrot||0),0);
+  const returnRate = sumWydane>0 ? (sumZwrot/sumWydane*100) : 0;
 
   const byCourier = {};
   for(const t of periodTx){
@@ -1518,8 +1398,8 @@ function viewStats(){
   let bestDay=null, bestDayVal=0;
   Object.entries(dayTotals).forEach(([d,v])=>{ if(v>bestDayVal){ bestDayVal=v; bestDay=d; } });
   const balances = courierBalances();
-  const topOutstanding = balances.filter(b=>b.bilans>0).sort((a,b)=>b.bilans-a.bilans)[0] || null;
-  const topVolume = [...balances].filter(b=>b.wydane>0).sort((a,b)=>b.wydane-a.wydane)[0];
+  const topOutstanding = balances.reduce((a,b)=> (b.bilans>(a?a.bilans:-Infinity))? b : a, null);
+  const topVolume = [...balances].sort((a,b)=>b.wydane-a.wydane)[0];
 
   /* ---- podpowiedzi / insights ---- */
   // "typical Monday" should be judged by average per occurrence, not the raw sum — a weekday that
@@ -1581,8 +1461,8 @@ function viewStats(){
   const staleCouriers = staleCourierList();
 
   const rateRows = couriers.map(c=>{
-    const w = (c.openingWydane||0) + transactions.filter(t=>t.kurierId===c.id && t.typ==='wydanie').reduce((s,t)=>s+t.ilosc,0);
-    const z = (c.openingZwrot||0) + transactions.filter(t=>t.kurierId===c.id && t.typ==='zwrot').reduce((s,t)=>s+t.ilosc,0);
+    const w = transactions.filter(t=>t.kurierId===c.id && t.typ==='wydanie').reduce((s,t)=>s+t.ilosc,0);
+    const z = transactions.filter(t=>t.kurierId===c.id && t.typ==='zwrot').reduce((s,t)=>s+t.ilosc,0);
     return {courier:c, w, z, rate: w>0? z/w*100 : null};
   }).filter(r=>r.rate!==null && r.w>=5);
   rateRows.sort((a,b)=>b.rate-a.rate);
@@ -1594,8 +1474,7 @@ function viewStats(){
   const lifetimeBalances = courierBalances();
   const lifetimeWydane = lifetimeBalances.reduce((s,b)=>s+b.wydane,0);
   const lifetimeOutstanding = totalOutstanding();
-  const outstandingRatio = (lifetimeWydane>0 && lifetimeOutstanding>0) ? (lifetimeOutstanding/lifetimeWydane*100) : 0;
-  const earliestTx = transactions.reduce((m,t)=> !m || t.data<m ? t.data : m, null);
+  const outstandingRatio = lifetimeWydane>0 ? (lifetimeOutstanding/lifetimeWydane*100) : 0;
 
   const biggestOp = [...transactions].sort((a,b)=>b.ilosc-a.ilosc)[0];
 
@@ -1608,29 +1487,27 @@ function viewStats(){
   // 'info'  (accent ●) — neutral, descriptive
   const insights = [];
   if(last4W>0 || prev4W>0){
-    const prev4Start = addDays(toKey(todayMon), -56);
-    if(prev4W===0 && (!earliestTx || earliestTx >= addDays(toKey(todayMon), -28))) insights.push({ tone:'info', text:`Ostatnie 4 pełne tygodnie: wydano <b>${num(last4W)} szt.</b> Wcześniejszych tygodni nie ma jeszcze w ewidencji, więc trendu nie da się policzyć.` });
-    else if(prev4W===0) insights.push({ tone:'info', text:`W poprzednich 4 tygodniach (od ${fmtDate(prev4Start)}) nie było wydań, w ostatnich 4 pełnych tygodniach wydano <b>${num(last4W)} szt.</b>` });
-    else if(last4W===prev4W) insights.push({ tone:'info', text:`Wydania w ostatnich 4 pełnych tyg. bez zmian względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
-    else insights.push({ tone:'info', text:`Wydania ${last4W>prev4W?'rosną':'maleją'} o <b>${pctLabel(last4W,prev4W).replace(/^[+-]/,'')}</b> w ostatnich 4 pełnych tyg. względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
+    if(trendPct===null) insights.push({ tone:'info', text:`Ostatnie 4 pełne tygodnie: <b>${num(last4W)}</b> wydanych palet. Wcześniejszych 4 tygodni nie ma jeszcze w ewidencji, więc trendu nie da się policzyć.` });
+    else if(trendPct===0) insights.push({ tone:'info', text:`Wydania w ostatnich 4 pełnych tyg. bez zmian względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
+    else insights.push({ tone:'info', text:`Wydania ${trendPct>0?'rosną':'maleją'} o <b>${Math.abs(trendPct)}%</b> w ostatnich 4 pełnych tyg. względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
   }
-  insights.push({ tone:'info', text:`Ten tydzień (${weekDayIdx===0?'dziś':'pon.–dziś'}): wydano <b>${num(thisWeekW)} szt.</b>; w tych samych dniach poprzedniego tygodnia: ${num(lastWeekW)} szt. (${pctLabel(thisWeekW,lastWeekW)}). Cały poprzedni tydzień: ${num(lastWeekFullW)} szt.` });
-  insights.push({ tone:'info', text:`Ten miesiąc (1.–${dayOfMonth}.): wydano <b>${num(thisMonthW)} szt.</b>; w tym samym okresie poprzedniego miesiąca: ${num(prevMonthW)} szt. (${pctLabel(thisMonthW,prevMonthW)}). Cały poprzedni miesiąc: ${num(prevMonthFullW)} szt.` });
+  insights.push({ tone:'info', text:`Ten tydzień (${weekDayIdx===0?'dziś':'pon.–dziś'}): <b>${num(thisWeekW)}</b> wydanych palet; w tych samych dniach poprzedniego tygodnia: ${num(lastWeekW)} (${pctLabel(thisWeekW,lastWeekW)}). Cały poprzedni tydzień: ${num(lastWeekFullW)} szt.` });
+  insights.push({ tone:'info', text:`Ten miesiąc (1.–${dayOfMonth}.): <b>${num(thisMonthW)}</b> wydanych palet; w tym samym okresie poprzedniego miesiąca: ${num(prevMonthW)} (${pctLabel(thisMonthW,prevMonthW)}). Cały poprzedni miesiąc: ${num(prevMonthFullW)} szt.` });
   if(peakWeekdayIdx>=0 && peakWeekdayOcc>0) insights.push({ tone:'info', text:`<b>${WEEKDAYS_PL[peakWeekdayIdx]}</b> to Twój najbardziej pracowity dzień tygodnia — średnio <b>${fmt1(peakWeekdayAvg)} szt.</b> wydania (łącznie ${num(peakWeekdayVal)} szt. z ${peakWeekdayOcc} ${peakWeekdayOcc===1?'dnia':'dni'}, w które były wydania).` });
-  if(topMonthsList[0]) insights.push({ tone:'info', text:`Najbardziej aktywny miesiąc: <b>${monthLabel(topMonthsList[0].mk)}</b> — wydano ${num(topMonthsList[0].w)} szt.` });
+  if(topMonthsList[0]) insights.push({ tone:'info', text:`Najbardziej aktywny miesiąc: <b>${monthLabel(topMonthsList[0].mk)}</b> — ${num(topMonthsList[0].w)} palet wydanych.` });
   if(avgPerActiveDay>0) insights.push({ tone:'info', text:`Średnio wydajesz <b>${fmt1(avgPerActiveDay)} szt.</b> w dniu, w którym w ogóle są wydania.` });
   if(grower && grower.delta!==0) insights.push({ tone: grower.delta>0?'info':'good', text:`<b>${escapeHtml(grower.courier.name)}</b> ${grower.delta>0?'zwiększył':'zmniejszył'} odbiór palet o <b>${num(Math.abs(grower.delta))}</b> szt. (ost. 30 dni vs poprz. 30 dni).` });
-  if(bestRate && worstRate && bestRate.courier.id!==worstRate.courier.id) insights.push({ tone:'info', text:`Najlepszy wskaźnik zwrotów (od początku, ze stanem początkowym): <b>${escapeHtml(bestRate.courier.name)}</b> (${pctText(bestRate.rate)}). Najsłabszy: <b>${escapeHtml(worstRate.courier.name)}</b> (${pctText(worstRate.rate)}).` });
-  if(outstandingRatio>0 && Math.round(outstandingRatio)<=15) insights.push({ tone:'good', text:`Tylko <b>${pctText(outstandingRatio)}</b> wszystkich kiedykolwiek wydanych palet jest wciąż niezwrócone (${num(lifetimeOutstanding)} szt.) — rozliczenia idą na bieżąco.` });
+  if(bestRate && worstRate && bestRate.courier.id!==worstRate.courier.id) insights.push({ tone:'info', text:`Najlepszy wskaźnik zwrotów: <b>${escapeHtml(bestRate.courier.name)}</b> (${bestRate.rate.toFixed(0)}%). Najsłabszy: <b>${escapeHtml(worstRate.courier.name)}</b> (${worstRate.rate.toFixed(0)}%).` });
+  if(outstandingRatio>0 && outstandingRatio<=15) insights.push({ tone:'good', text:`Tylko <b>${outstandingRatio.toFixed(0)}%</b> wszystkich kiedykolwiek wydanych palet jest wciąż niezwrócone — rozliczenia idą na bieżąco.` });
 
   // alerts — the same shape, but genuinely need attention, shown in their own panel
   const alerts = [];
   staleCouriers.forEach(b=> alerts.push({ tone:'warn', text: b.info.status==='never'
       ? `<b>${escapeHtml(b.courier.name)}</b> nie zwrócił jeszcze żadnej palety — ma u siebie ${num(b.bilans)} szt.`
       : `<b>${escapeHtml(b.courier.name)}</b> nie oddał żadnej palety od <b>${b.info.days} dni</b> (ostatni zwrot: ${fmtDate(b.info.date)}) — ma u siebie ${num(b.bilans)} szt.` }));
-  if(returnRate!==null && Math.round(returnRate)<70) alerts.push({ tone:'warn', text:`Wskaźnik zwrotów w wybranym okresie to tylko <b>${pctText(returnRate)}</b> (zwrócono ${num(sumZwrot)} z ${num(sumWydane)} szt. wydanych) — warto sprawdzić zaległe palety u kurierów.` });
-  if(Math.round(outstandingRatio)>=45) alerts.push({ tone:'warn', text:`Aż <b>${pctText(outstandingRatio)}</b> wszystkich kiedykolwiek wydanych palet jest wciąż niezwrócone (${num(lifetimeOutstanding)} szt.) — spory zator w rozliczeniach.` });
-  if(daysSinceLastTx!==null && daysSinceLastTx>=5) alerts.push({ tone:'warn', text:`Brak jakiejkolwiek operacji od <b>${dni(daysSinceLastTx)}</b> (ostatnia: ${fmtDate(lastTx.data)}) — sprawdź, czy ewidencja jest na bieżąco.` });
+  if(returnRate<70 && sumWydane>0) alerts.push({ tone:'warn', text:`Wskaźnik zwrotów w wybranym okresie to tylko <b>${returnRate.toFixed(0)}%</b> — warto sprawdzić zaległe palety u kurierów.` });
+  if(outstandingRatio>=45) alerts.push({ tone:'warn', text:`Aż <b>${outstandingRatio.toFixed(0)}%</b> wszystkich kiedykolwiek wydanych palet jest wciąż niezwrócone (${num(lifetimeOutstanding)} szt.) — spory zator w rozliczeniach.` });
+  if(daysSinceLastTx!==null && daysSinceLastTx>=5) alerts.push({ tone:'warn', text:`Brak jakiejkolwiek operacji od <b>${daysSinceLastTx} dni</b> (ostatnia: ${fmtDate(lastTx.data)}) — sprawdź, czy ewidencja jest na bieżąco.` });
 
   function insightRow(ins){
     const color = ins.tone==='warn'?'var(--bad)':(ins.tone==='good'?'var(--good)':'var(--accent-strong)');
@@ -1652,16 +1529,16 @@ function viewStats(){
     </div>
 
     <div class="grid kpi-grid" style="margin-bottom:16px;">
-      <div class="kpi"><div class="lbl">Wydane w okresie</div><div class="val" style="color:var(--bad)">${num(sumWydane)}</div><div class="sub">${statsPeriod==='all' && openingW ? `szt. + ${num(openingW)} ze stanu początkowego` : 'szt.'}</div></div>
-      <div class="kpi"><div class="lbl">Zwrócone w okresie</div><div class="val" style="color:var(--good)">${num(sumZwrot)}</div><div class="sub">${statsPeriod==='all' && openingZ ? `szt. + ${num(openingZ)} ze stanu początkowego` : 'szt.'}</div></div>
+      <div class="kpi"><div class="lbl">Wydane w okresie</div><div class="val" style="color:var(--bad)">${num(sumWydane)}</div><div class="sub">palet</div></div>
+      <div class="kpi"><div class="lbl">Zwrócone w okresie</div><div class="val" style="color:var(--good)">${num(sumZwrot)}</div><div class="sub">palet</div></div>
       <div class="kpi"><div class="lbl">Liczba operacji</div><div class="val">${num(opsCount)}</div><div class="sub">śr. ${fmt1(avgPerOp)} szt./op.</div></div>
-      <div class="kpi"><div class="lbl">Wskaźnik zwrotów</div><div class="val">${pctText(returnRate)}</div><div class="sub">${returnRate===null ? 'brak wydań w okresie' : 'zwrócone / wydane w okresie'}</div></div>
-      <div class="kpi"><div class="lbl">Niezwrócone łącznie</div><div class="val" style="color:${lifetimeOutstanding<=0?'var(--good)':(outstandingRatio>35?'var(--bad)':(outstandingRatio>15?'var(--info)':'var(--good)'))}">${num(lifetimeOutstanding)}</div><div class="sub">${lifetimeOutstanding>0 ? `${pctText(outstandingRatio)} wszystkich kiedykolwiek wydanych` : lifetimeOutstanding<0 ? `zwrócono o ${num(-lifetimeOutstanding)} szt. więcej, niż wydano` : 'wszystko rozliczone'}</div></div>
+      <div class="kpi"><div class="lbl">Wskaźnik zwrotów</div><div class="val">${returnRate.toFixed(0)}%</div><div class="sub">zwrócone / wydane</div></div>
+      <div class="kpi"><div class="lbl">Niezwrócone łącznie</div><div class="val" style="color:${outstandingRatio>35?'var(--bad)':(outstandingRatio>15?'var(--info)':'var(--good)')}">${num(lifetimeOutstanding)}</div><div class="sub">${outstandingRatio.toFixed(0)}% wszystkich kiedykolwiek wydanych</div></div>
     </div>
 
     ${alerts.length? `
     <div class="panel" style="border-color:color-mix(in srgb, var(--bad) 45%, var(--border));">
-      <div class="panel-title"><h2 style="padding-left:11px;">Alerty</h2><span class="hint">${num(alerts.length)} ${plForm(alerts.length,'sprawa wymaga','sprawy wymagają','spraw wymaga')} uwagi</span></div>
+      <div class="panel-title"><h2 style="padding-left:11px;">Alerty</h2><span class="hint">${alerts.length} ${alerts.length===1?'sprawa wymaga':'spraw wymaga'} uwagi</span></div>
       <div style="display:flex; flex-direction:column; gap:9px;">${alerts.map(insightRow).join('')}</div>
     </div>` : ''}
 
@@ -1682,7 +1559,7 @@ function viewStats(){
         <div class="panel-title"><h2>Top 5 tygodni</h2><span class="hint">wg wydanych palet</span></div>
         ${topWeeksList.length? topWeeksList.map((w,i)=>`
           <div class="week-row" style="cursor:default;">
-            <div class="rng"><span class="mono" style="color:var(--text-faint); width:16px; display:inline-block;">${i+1}.</span>${weekLabel(w.wk, true)}</div>
+            <div class="rng"><span class="mono" style="color:var(--text-faint); width:16px; display:inline-block;">${i+1}.</span>${weekLabel(w.wk)}</div>
             <div class="stats"><span style="color:var(--bad)">+${num(w.w)}</span><span style="color:var(--good)">−${num(w.z)}</span></div>
           </div>`).join('') : `<div class="empty" style="padding:16px;"><p>Brak danych</p></div>`}
       </div>
@@ -1743,11 +1620,11 @@ function viewStats(){
 
     <div class="panel-title"><h2>Rekordy</h2><span class="hint">cały zarejestrowany okres</span></div>
     <div class="grid records-grid">
-      <div class="panel record-card"><div class="lbl">Dzień z największym wydaniem</div><div class="val">${bestDay? fmtDate(bestDay) : '—'}</div><div class="sub">${bestDay? 'wydano '+num(bestDayVal)+' szt.'+(dayReturns[bestDay]? ` (tego dnia też ${num(dayReturns[bestDay])} szt. zwrotów)`:'') : 'brak danych'}</div></div>
-      <div class="panel record-card"><div class="lbl">Największy bilans u kuriera</div><div class="val" style="color:var(--bad)">${topOutstanding? escapeHtml(topOutstanding.courier.name):'—'}</div><div class="sub">${topOutstanding? palet(topOutstanding.bilans)+' u kuriera' : 'nikt nie ma naszych palet'}</div></div>
-      <div class="panel record-card"><div class="lbl">Kurier o największym wolumenie</div><div class="val">${topVolume? escapeHtml(topVolume.courier.name):'—'}</div><div class="sub">${topVolume? 'wydano łącznie '+num(topVolume.wydane)+' szt.'+((topVolume.courier.openingWydane)?' (ze stanem początkowym)':''):'brak danych'}</div></div>
+      <div class="panel record-card"><div class="lbl">Dzień z największym wydaniem</div><div class="val">${bestDay? fmtDate(bestDay) : '—'}</div><div class="sub">${bestDay? num(bestDayVal)+' szt. wydanych'+(dayReturns[bestDay]? ` (tego dnia też ${num(dayReturns[bestDay])} szt. zwrotów)`:'') : 'brak danych'}</div></div>
+      <div class="panel record-card"><div class="lbl">Największy bilans u kuriera</div><div class="val" style="color:var(--bad)">${topOutstanding? escapeHtml(topOutstanding.courier.name):'—'}</div><div class="sub">${topOutstanding? num(topOutstanding.bilans)+' palet w drodze':'brak danych'}</div></div>
+      <div class="panel record-card"><div class="lbl">Kurier o największym wolumenie</div><div class="val">${topVolume? escapeHtml(topVolume.courier.name):'—'}</div><div class="sub">${topVolume? num(topVolume.wydane)+' palet wydanych łącznie'+((topVolume.courier.openingWydane)?' (ze stanem początkowym)':''):'brak danych'}</div></div>
       <div class="panel record-card"><div class="lbl">Wszystkich operacji</div><div class="val">${num(transactions.length)}</div><div class="sub">od początku ewidencji</div></div>
-      <div class="panel record-card"><div class="lbl">Największa pojedyncza operacja</div><div class="val">${biggestOp? palet(biggestOp.ilosc) : '—'}</div><div class="sub">${biggestOp? (biggestOp.typ==='wydanie'?'Wydanie':'Zwrot')+' · '+escapeHtml(txCourierName(biggestOp))+' · '+fmtDate(biggestOp.data) : 'brak danych'}</div></div>
+      <div class="panel record-card"><div class="lbl">Największa pojedyncza operacja</div><div class="val">${biggestOp? num(biggestOp.ilosc)+' palet' : '—'}</div><div class="sub">${biggestOp? (biggestOp.typ==='wydanie'?'Wydanie':'Zwrot')+' · '+escapeHtml(txCourierName(biggestOp))+' · '+fmtDate(biggestOp.data) : 'brak danych'}</div></div>
     </div>
   `;
 }
@@ -1867,7 +1744,7 @@ function viewCourierDetail(id){
     <div class="view-head">
       <div style="display:flex;align-items:center;gap:12px;">
         ${courierBadge(courier,44)}
-        <div><h1 style="margin-bottom:2px;">${escapeHtml(courier.name)}</h1><p>${!courierById(id) ? 'Kurier usunięty · ' : courier.enabled===false? 'Kurier nieaktywny · ':''}${opsLabel(allTx.length)} łącznie</p></div>
+        <div><h1 style="margin-bottom:2px;">${escapeHtml(courier.name)}</h1><p>${courier.enabled===false? 'Kurier nieaktywny · ':''}${num(allTx.length)} operacji łącznie</p></div>
       </div>
       <button class="btn btn-primary" data-action="new-for-courier" data-id="${courier.id}">${ICONS.plus}Nowa operacja</button>
     </div>
@@ -1877,7 +1754,7 @@ function viewCourierDetail(id){
       <div class="kpi"><div class="lbl">Zwrócone łącznie</div><div class="val" style="color:var(--good)">${num(zwrotAll)}</div></div>
       <div class="kpi"><div class="lbl">Aktualny bilans</div><div class="val" style="color:${bilansAll>0?'var(--bad)':(bilansAll<0?'var(--info)':'var(--good)')}">${bilansAll>0?'+':''}${num(bilansAll)}</div></div>
     </div>
-    ${(openingW||openingZ)? `<div style="font-size:12.5px; color:var(--text-faint); margin-bottom:18px;">w tym stan początkowy sprzed rozpoczęcia ewidencji: +${num(openingW)} wydanych, +${num(openingZ)} zwróconych — liczony w saldach, ale nie w statystykach tygodni i miesięcy</div>` : ''}
+    ${(openingW||openingZ)? `<div style="font-size:12.5px; color:var(--text-faint); margin-bottom:18px;">w tym stan początkowy sprzed rozpoczęcia ewidencji: +${num(openingW)} wydanych, +${num(openingZ)} zwróconych — nieuwzględniony w wykresach i rekordach poniżej</div>` : ''}
 
     <div class="panel">
       <div class="panel-title">
@@ -1971,14 +1848,13 @@ function viewCourierDetail(id){
           ${isOpen? `<div class="acc-body"><div class="acc-sub">
             ${weeks.length? weeks.map(wk=>{
               const wkOpen = cdExpandedWeek===wk;
-              const mStart = `${m.mk}-01`, mEnd = toKey(new Date(cdYear, m.idx+1, 0));
-              const wFrom = wk < mStart ? mStart : wk, wTo = addDays(wk,6) > mEnd ? mEnd : addDays(wk,6);
-              const txW = allTx.filter(t=> t.data>=wFrom && t.data<=wTo).sort((a,b)=>a.data.localeCompare(b.data));
+              const wEnd = addDays(wk,6);
+              const txW = allTx.filter(t=> t.data>=wk && t.data<=wEnd).sort((a,b)=>a.data.localeCompare(b.data));
               const w = txW.filter(t=>t.typ==='wydanie').reduce((s,t)=>s+t.ilosc,0);
               const z = txW.filter(t=>t.typ==='zwrot').reduce((s,t)=>s+t.ilosc,0);
               return `
                 <div class="week-row" data-action="toggle-week" data-wk="${wk}">
-                  <div class="rng">${wkOpen?ICONS.chevRight.replace('class="chev"','class="chev" style="transform:rotate(90deg);width:13px;height:13px;"'):ICONS.chevRight.replace('class="chev"','class="chev" style="width:13px;height:13px;"')}${rangeLabel(wFrom, wTo)}</div>
+                  <div class="rng">${wkOpen?ICONS.chevRight.replace('class="chev"','class="chev" style="transform:rotate(90deg);width:13px;height:13px;"'):ICONS.chevRight.replace('class="chev"','class="chev" style="width:13px;height:13px;"')}${weekLabel(wk)}</div>
                   <div class="stats"><span style="color:var(--bad)">${w?'+'+num(w):'—'}</span><span style="color:var(--good)">${z?'−'+num(z):'—'}</span></div>
                 </div>
                 ${wkOpen? `<div style="padding-left:22px;">
@@ -2008,7 +1884,7 @@ function viewCourierDetail(id){
 function viewCouriers(){
   const allBal = courierBalances();
   // deleted couriers have no settings to edit — list them read-only below instead of as broken rows
-  const balances = allBal.filter(b=>courierById(b.courier.id)).sort((a,b)=>courierOrder(a.courier)-courierOrder(b.courier));
+  const balances = allBal.filter(b=>courierById(b.courier.id)).sort((a,b)=>(a.courier.order||99)-(b.courier.order||99));
   const deletedBal = allBal.filter(b=>!courierById(b.courier.id));
   return `
     <div class="view-head">
@@ -2255,14 +2131,7 @@ async function runImport(parsed, mode){
     wz: Math.max((counters&&counters.wz)||0, Number(parsed.counters.wz)||0, maxOf('WZ')),
     pz: Math.max((counters&&counters.pz)||0, Number(parsed.counters.pz)||0, maxOf('PZ')),
   };
-  try{
-    await withNumberingLock(async ()=>{
-      const cur = await readCounters();
-      const target = {wz: Math.max(newCounters.wz, cur.data.wz||0), pz: Math.max(newCounters.pz, cur.data.pz||0)};
-      if(!cur.exists || cur.data.wz!==target.wz || cur.data.pz!==target.pz) await writeCounters(cur, target);
-    });
-    if(!(settings && settings.seeded)){ await db.doc('meta/settings').set({...(settings||{}), seeded:true}); }
-  }catch(e){ failed++; console.error(e); }
+  try{ counters = newCounters; await db.doc('meta/counters').set(newCounters); }catch(e){ failed++; console.error(e); }
   if(mode==='replace') olderTx.clear();
   couriersSeeded = true; importRunning = false; bulkWriting = false; docketMigrationDone = false;
   closeModal(); mergeTransactions(); render(); migrateDockets();
@@ -2459,7 +2328,7 @@ function openEditCourierModal(id){
       </div>
       <div style="border-top:1px solid var(--border); padding-top:14px; margin-bottom:16px;">
         <label style="font-size:13px; font-weight:600; color:var(--text-dim); display:block; margin-bottom:3px;">Stan początkowy (sprzed rozpoczęcia ewidencji)</label>
-        <div style="font-size:12px; color:var(--text-faint); margin-bottom:10px; line-height:1.45;">Jednorazowa korekta, np. z wcześniejszej, papierowej ewidencji. Dolicza się do bilansu, sum „łącznie”, bilansu narastającego i wskaźników „od początku”, ale nie ma daty — nie trafia do statystyk tygodniowych, miesięcznych ani do wybranych okresów.</div>
+        <div style="font-size:12px; color:var(--text-faint); margin-bottom:10px; line-height:1.45;">Jednorazowa korekta, np. z wcześniejszej, papierowej ewidencji. Dolicza się do bilansu i sum „łącznie”, ale nie trafia do żadnej konkretnej daty — nie wpływa na wykresy, rekordy ani statystyki tygodniowe/miesięczne.</div>
         <div class="form-grid" style="max-width:none; gap:10px;">
           <div class="field"><label>Wydane wcześniej</label><input type="number" inputmode="numeric" min="0" step="1" id="editOpeningWydane" value="${c.openingWydane||0}"></div>
           <div class="field"><label>Zwrócone wcześniej</label><input type="number" inputmode="numeric" min="0" step="1" id="editOpeningZwrot" value="${c.openingZwrot||0}"></div>
@@ -2535,11 +2404,8 @@ function confirmDialog(title, msg, opts){
 
 /* ---------------------------- ACTIONS ---------------------------- */
 async function createCourier(name, color){
-  name = String(name).trim().replace(/\s+/g,' ').slice(0,60);
-  const same = couriers.find(c=>(c.name||'').trim().toLowerCase()===name.toLowerCase());
-  if(same){ toast(`Kurier „${same.name}” już jest na liście`, true); return; }
   let base = slugify(name), id = base, i = 2;
-  while(courierById(id) || transactions.some(t=>t.kurierId===id)) { id = `${base}-${i}`; i++; }
+  while(courierById(id)) { id = `${base}-${i}`; i++; }
   const order = (couriers.length? Math.max(...couriers.map(c=>c.order||0)) : 0) + 1;
   try{ await db.collection('couriers').doc(id).set({name, order, color, custom:true, enabled:true}); toast(`Dodano kuriera „${name}”`); }
   catch(e){ console.error(e); toast('Nie udało się dodać kuriera', true); }
@@ -2552,15 +2418,16 @@ async function toggleCourier(id, enabled){
   try{ await db.collection('couriers').doc(id).update({enabled}); }
   catch(e){ console.error(e); toast('Nie udało się zaktualizować kuriera', true); render(); }
 }
-function courierOrder(c){ return Number.isFinite(c.order) ? c.order : 999; }
-// swap in the displayed order, then renumber everyone 1..n — also repairs duplicate/missing values
 async function moveCourier(id, dir){
-  const sorted = [...couriers].sort((a,b)=>courierOrder(a)-courierOrder(b));
-  const idx = sorted.findIndex(c=>c.id===id), swapIdx = idx+dir;
+  const sorted = [...couriers].sort((a,b)=>(a.order||99)-(b.order||99));
+  const idx = sorted.findIndex(c=>c.id===id);
+  const swapIdx = idx+dir;
   if(idx<0 || swapIdx<0 || swapIdx>=sorted.length) return;
-  [sorted[idx], sorted[swapIdx]] = [sorted[swapIdx], sorted[idx]];
+  const a = sorted[idx], b = sorted[swapIdx];
+  const orderA = a.order||idx, orderB = b.order||swapIdx;
   try{
-    for(let k=0;k<sorted.length;k++){ if(sorted[k].order!==k+1) await db.collection('couriers').doc(sorted[k].id).update({order:k+1}); }
+    await db.collection('couriers').doc(a.id).update({order: orderB});
+    await db.collection('couriers').doc(b.id).update({order: orderA});
   }catch(e){ console.error(e); toast('Nie udało się zmienić kolejności', true); }
 }
 async function uploadCourierLogo(id, file){
@@ -2577,7 +2444,6 @@ async function removeCourierLogo(id){
   catch(e){ console.error(e); toast('Nie udało się usunąć logo', true); }
 }
 async function saveTransaction(form){
-  if(!historyComplete){ toast('Trwa wczytywanie historii — spróbuj za chwilę', true); return false; }
   const fd = new FormData(form);
   const editId = fd.get('editId') || '';
   const orig = editId ? transactions.find(t=>t.id===editId) : null;
@@ -2610,10 +2476,8 @@ async function saveTransaction(form){
     }
   } else {
     const c = courierById(kurierId);
-    const known = transactions.find(t=>t.kurierId===kurierId);
     if(c) kurierNazwa = c.name;
     else if(orig && orig.kurierId===kurierId) kurierNazwa = orig.kurierNazwa;
-    else if(known) kurierNazwa = known.kurierNazwa || kurierId;
     else { toast('Wybierz kuriera', true); return false; }
   }
 
@@ -2638,33 +2502,21 @@ async function saveTransaction(form){
     catch(e){ console.error(e); toast('Nie udało się dodać nowego kuriera', true); return false; }
   }
   const payload = {kurierId, kurierNazwa, typ, ilosc, data, uwagi};
-  // an operation dated on/before the oldest day of the live window is not delivered by the live
-  // subscription — keep our own copy in olderTx so it counts immediately
-  const keepOlder = (id, doc)=>{ if(olderTx.has(id) || (olderBoundary && doc.data <= olderBoundary)){ olderTx.set(id, {...doc, id}); mergeTransactions(); render(true); } };
-  let allocated = null;
   try{
     if(orig){
-      if(orig.typ!==payload.typ) allocated = payload.nr = await allocDocket(payload.typ); // WZ ↔ PZ: new number of the right kind
+      if(orig.typ!==payload.typ) payload.nr = await allocDocket(payload.typ); // WZ ↔ PZ: new number of the right kind
       await db.collection('transactions').doc(editId).update(payload);
-      keepOlder(editId, {...orig, ...payload});
-      if(allocated) await ensureUniqueDocket(editId, allocated, payload.typ);
+      if(olderTx.has(editId)){ olderTx.set(editId, {...olderTx.get(editId), ...payload}); mergeTransactions(); }
       toast('Operacja zaktualizowana'+(payload.nr? ` — nowy numer ${payload.nr}`:''));
     }
     else {
       payload.createdAt = Date.now();
-      allocated = payload.nr = await allocDocket(payload.typ);
-      const ref = await db.collection('transactions').add(payload);
-      keepOlder(ref.id, payload);
-      const finalNr = await ensureUniqueDocket(ref.id, payload.nr, payload.typ);
-      toast((payload.typ==='wydanie'? 'Zarejestrowano wydanie palet':'Zarejestrowano zwrot palet')+` (${finalNr})`);
+      payload.nr = await allocDocket(payload.typ);
+      await db.collection('transactions').add(payload);
+      toast((payload.typ==='wydanie'? 'Zarejestrowano wydanie palet':'Zarejestrowano zwrot palet')+` (${payload.nr})`);
     }
     return {ok:true, kurierId, typ, data};
-  }catch(e){
-    console.error(e);
-    if(allocated && !(e && e.code==='unique')) releaseDocket(allocated);
-    toast(e && e.code==='busy' ? e.message : 'Nie udało się zapisać operacji'+(e && e.code==='unavailable' ? ' — brak połączenia z bazą' : ''), true);
-    return false;
-  }
+  }catch(e){ console.error(e); toast('Nie udało się zapisać operacji'+(e && e.code==='unavailable' ? ' — brak połączenia z bazą' : ''), true); return false; }
 }
 async function deleteTransaction(id){
   const t = transactions.find(x=>x.id===id);

@@ -27,7 +27,7 @@
       get(){ return Promise.resolve(this._run()); },
       onSnapshot(cb){ const s={coll, run:()=>cb(this._run())}; subs.push(s); setTimeout(s.run,0); return ()=>{ const i=subs.indexOf(s); if(i>-1) subs.splice(i,1); }; },
       doc(id){ return D(coll, id||('n'+(++seq))); },
-      add(d){ const r=D(coll,'n'+(++seq)); return r.set(d).then(()=>r); },
+      add(d){ if(window.__failAdd) return Promise.reject(Object.assign(new Error('symulowany błąd zapisu'),{code:'unavailable'})); const r=D(coll,'n'+(++seq)); return r.set(d).then(()=>r); },
     };
   }
   function fire(coll){ subs.filter(s=>s.coll===coll).forEach(s=>{ if(pend.has(s)) return; pend.add(s); setTimeout(()=>{ pend.delete(s); s.run(); },0); }); }

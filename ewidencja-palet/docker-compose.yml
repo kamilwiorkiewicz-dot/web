@@ -1,0 +1,25 @@
+# Ewidencja Palet — Synology Container Manager (Projekt → Utwórz → istniejący docker-compose.yml)
+# albo dowolny Docker:  docker compose up -d --build
+# Aplikacja: http://ADRES-NAS:8080   ·   Dane: podfolder ./dane obok tego pliku (baza, loga, kopie dzienne)
+services:
+  ewidencja-palet:
+    build: .
+    image: ewidencja-palet:latest
+    container_name: ewidencja-palet
+    restart: unless-stopped
+    ports:
+      - "8080:8080"            # zmiana portu na NAS-ie: "8090:8080"
+    volumes:
+      - ./dane:/app/dane
+    # Folder ./dane na NAS-ie należy zwykle do Twojego użytkownika DSM (a gdy go nie ma, Docker tworzy go
+    # jako root), więc zwykły użytkownik kontenera nie mógłby w nim zapisywać. Dlatego kontener startuje
+    # jako root, serwer nadaje folderowi danych właściciela i NATYCHMIAST przechodzi na zwykłego użytkownika
+    # (EP_UZYTKOWNIK=auto: właściciel folderu ./dane, a gdy to root — użytkownik „node”).
+    # Jeśli wolisz inaczej: usuń „user” i EP_UZYTKOWNIK, a folderowi ./dane nadaj zapis dla UID 1000.
+    user: "0:0"
+    environment:
+      - TZ=Europe/Warsaw
+      - EP_UZYTKOWNIK=auto
+      # Hasło do aplikacji (zalecane, gdy NAS jest dostępny z internetu). Odkomentuj i wpisz własne;
+      # przeglądarka zapyta o nie przy wejściu, nazwa użytkownika może być dowolna:
+      # - EP_HASLO=wpisz-tu-swoje-haslo
