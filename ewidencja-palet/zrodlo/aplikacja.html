@@ -281,7 +281,7 @@
     border:1px solid transparent; background:transparent; color:var(--text-faint);
     width:30px; height:30px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer;
   }
-  .icon-btn svg{ width:15px; height:15px; }
+  .icon-btn svg{ width:15px; height:15px; flex-shrink:0; }
   .icon-btn:hover{ background:var(--panel-2); color:var(--text); }
   .icon-btn.danger:hover{ color:var(--bad); }
   .icon-btn.accent:hover{ color:var(--accent-strong); }
@@ -2106,8 +2106,8 @@ function viewCouriers(){
           <div class="stats"><span style="color:var(--bad)">↑${num(b.wydane)}</span><span style="color:var(--good)">↓${num(b.zwrocone)}</span><span style="color:${b.bilans>0?'var(--bad)':(b.bilans<0?'var(--info)':'var(--good)')}">${b.bilans>0?'+':''}${num(b.bilans)}</span></div>
           <div class="actions">
             <div style="display:flex; flex-direction:column; gap:2px;">
-              <button class="icon-btn btn-sm" id="mv-up-${escapeHtml(b.courier.id)}" data-action="move-courier" data-id="${escapeHtml(b.courier.id)}" data-dir="-1" title="Wyżej" aria-label="Przesuń ${escapeHtml(b.courier.name)} wyżej" ${i===0?'disabled':''} style="height:22px;width:26px;opacity:${i===0?'.25':'1'};">${ICONS.chevRight.replace('m9 6 6 6-6 6','m6 15 6-6 6 6').replace('class="chev"','style="width:13px;height:13px;transform:none;"')}</button>
-              <button class="icon-btn btn-sm" id="mv-down-${escapeHtml(b.courier.id)}" data-action="move-courier" data-id="${escapeHtml(b.courier.id)}" data-dir="1" title="Niżej" aria-label="Przesuń ${escapeHtml(b.courier.name)} niżej" ${i===balances.length-1?'disabled':''} style="height:22px;width:26px;opacity:${i===balances.length-1?'.25':'1'};">${ICONS.chevRight.replace('m9 6 6 6-6 6','m6 9 6 6 6-6').replace('class="chev"','style="width:13px;height:13px;transform:none;"')}</button>
+              <button class="icon-btn btn-sm" id="mv-up-${escapeHtml(b.courier.id)}" data-action="move-courier" data-id="${escapeHtml(b.courier.id)}" data-dir="-1" title="Wyżej" aria-label="Przesuń ${escapeHtml(b.courier.name)} wyżej" ${i===0?'disabled':''} style="height:22px;width:26px;padding:0;opacity:${i===0?'.25':'1'};">${ICONS.chevRight.replace('m9 6 6 6-6 6','m6 15 6-6 6 6').replace('class="chev"','style="width:13px;height:13px;transform:none;"')}</button>
+              <button class="icon-btn btn-sm" id="mv-down-${escapeHtml(b.courier.id)}" data-action="move-courier" data-id="${escapeHtml(b.courier.id)}" data-dir="1" title="Niżej" aria-label="Przesuń ${escapeHtml(b.courier.name)} niżej" ${i===balances.length-1?'disabled':''} style="height:22px;width:26px;padding:0;opacity:${i===balances.length-1?'.25':'1'};">${ICONS.chevRight.replace('m9 6 6 6-6 6','m6 9 6 6 6-6').replace('class="chev"','style="width:13px;height:13px;transform:none;"')}</button>
             </div>
             <label class="switch" title="${isEnabled(b.courier)?'Aktywny':'Nieaktywny'}" data-action="stop">
               <input type="checkbox" id="tg-${escapeHtml(b.courier.id)}" data-action="toggle-courier" data-id="${escapeHtml(b.courier.id)}" ${isEnabled(b.courier)?'checked':''} aria-label="${escapeHtml(b.courier.name)} aktywny">
