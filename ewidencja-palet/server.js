@@ -72,13 +72,28 @@ function czyUsun(v) { return czyObiekt(v) && v.__delete__ === true && Object.key
 function ustaw(o, k, v) { Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true }); }
 // głęboka kopia przez JSON (dane są czystym JSON-em); bezpieczna dla kluczy typu "__proto__"
 function klon(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
-function bezZnacznikowUsun(data) { const o = {}; for (const k of Object.keys(data)) if (!czyUsun(data[k])) ustaw(o, k, data[k]); return o; }
+// set: znaczniki {__delete__:true} nie trafiają do dokumentu (na żadnym poziomie)
+function bezZnacznikowUsun(data) {
+  const o = {};
+  for (const k of Object.keys(data)) if (!czyUsun(data[k])) ustaw(o, k, czyObiekt(data[k]) ? bezZnacznikowUsun(data[k]) : data[k]);
+  return o;
+}
+// update: jak na platformie — zagnieżdżone obiekty scalają się rekurencyjnie, tablice i reszta zastępują
+// pole w całości, {__delete__:true} usuwa pole (także zagnieżdżone)
 function scal(stare, zmiana) {
   const o = {};
   for (const k of Object.keys(stare)) ustaw(o, k, stare[k]);
-  for (const k of Object.keys(zmiana)) { if (czyUsun(zmiana[k])) delete o[k]; else ustaw(o, k, zmiana[k]); }
+  for (const k of Object.keys(zmiana)) {
+    const v = zmiana[k];
+    if (czyUsun(v)) delete o[k];
+    else if (czyObiekt(v) && czyObiekt(o[k])) ustaw(o, k, scal(o[k], v));
+    else ustaw(o, k, czyObiekt(v) ? bezZnacznikowUsun(v) : v);
+  }
   return o;
 }
+// podobiekt pod kluczem k (tworzy go); bezpieczne także dla klucza "__proto__"
+function grupa(o, k) { if (!Object.prototype.hasOwnProperty.call(o, k)) ustaw(o, k, {}); return o[k]; }
+const poprawneId = (v) => typeof v === 'string' && ID_RE.test(v) && v !== '.' && v !== '..';
 function spij(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) { /* ignore */ } }
 
 function fsyncKatalog(dir) {
@@ -156,12 +171,14 @@ class Baza {
     }
   }
 
+  /** Czyta plik bazy (baza.json) ALBO kopię w formacie aplikacji (kopie dzienne, /api/kopia, „Pobierz kopię”). */
   static parsuj(tekst) {
-    const o = JSON.parse(tekst);
+    let o = JSON.parse(tekst);
+    if (czyObiekt(o) && o.app === APP && Array.isArray(o.couriers) && Array.isArray(o.transactions)) o = zKopiiAplikacji(o);
     if (!czyObiekt(o) || !czyObiekt(o.collections)) throw new Error('brak sekcji "collections"');
     for (const [c, docs] of Object.entries(o.collections)) {
-      if (!ID_RE.test(c) || !czyObiekt(docs)) throw new Error(`nieprawidłowa kolekcja "${c}"`);
-      for (const [id, d] of Object.entries(docs)) if (!ID_RE.test(id) || !czyObiekt(d)) throw new Error(`nieprawidłowy dokument "${c}/${id}"`);
+      if (!poprawneId(c) || !czyObiekt(docs)) throw new Error(`nieprawidłowa kolekcja "${c}"`);
+      for (const [id, d] of Object.entries(docs)) if (!poprawneId(id) || !czyObiekt(d)) throw new Error(`nieprawidłowy dokument "${c}/${id}"`);
     }
     if (o.assets !== undefined && !czyObiekt(o.assets)) throw new Error('nieprawidłowa sekcja "assets"');
     return o;
@@ -203,6 +220,7 @@ class Baza {
       try {
         const o = Baza.parsuj(fs.readFileSync(p, 'utf8'));
         this.zastosujStan(o);
+        this.odtworzPlikiZalacznikow(o.logos);
         this.ostatnioZapisany = this.serializuj();
         zapiszAtomowo(this.plik, this.ostatnioZapisany);
         msg.push(`!!  PRZYWRÓCONO dane z kopii: ${p}`, '!!  Zmiany wprowadzone po utworzeniu tej kopii mogły zostać utracone.', linia);
@@ -216,6 +234,17 @@ class Baza {
     msg.push('!!  Nie znaleziono żadnej poprawnej kopii — startuję z PUSTĄ bazą.', linia);
     this.log.error(msg.join('\n'));
     return { przywrocono: false, odlozony };
+  }
+
+  /** Kopia w formacie aplikacji niesie loga jako data URL — brakujące pliki w zalaczniki/ odtwarzamy z niej. */
+  odtworzPlikiZalacznikow(logos) {
+    if (!czyObiekt(logos)) return;
+    for (const [id, du] of Object.entries(logos)) {
+      const plik = path.join(this.dirZal, id);
+      const d = dataUrlNaBufor(du);
+      if (!ASSET_ID_RE.test(id) || !d || fs.existsSync(plik)) continue;
+      try { zapiszAtomowo(plik, d.buf); } catch (e) { this.log.error(`Nie udało się odtworzyć logo ${id}: ${e.message}`); }
+    }
   }
 
   serializuj() {
@@ -283,14 +312,21 @@ class Baza {
     try { return fs.readdirSync(this.dirKopie).filter(f => /^baza-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort(); } catch (e) { return []; }
   }
 
-  /** Kopia dzienna: stan bazy z początku dnia (sprzed pierwszej zmiany tego dnia). */
+  /**
+   * Kopia dzienna: stan bazy z początku dnia (sprzed pierwszej zmiany tego dnia), w formacie kopii
+   * aplikacji — razem z logami — więc da się ją wczytać w aplikacji („Wczytaj kopię z pliku”) albo
+   * posłuży serwerowi do odtworzenia uszkodzonego baza.json.
+   */
   kopiaDzienna() {
     const dzien = dzisiaj();
     if (this.dzienKopii === dzien) return;
     if (!fs.existsSync(this.plik)) return; // nic jeszcze nie zapisano
     const cel = path.join(this.dirKopie, `baza-${dzien}.json`);
     try {
-      if (!fs.existsSync(cel)) zapiszAtomowo(cel, fs.readFileSync(this.plik));
+      if (!fs.existsSync(cel)) {
+        const stan = Baza.parsuj(this.ostatnioZapisany !== null ? this.ostatnioZapisany : fs.readFileSync(this.plik, 'utf8'));
+        zapiszAtomowo(cel, JSON.stringify(doKopiiAplikacji(stan, this.dirZal), null, 1));
+      }
       this.dzienKopii = dzien;
       const kopie = this.listaKopii();
       for (const f of kopie.slice(0, Math.max(0, kopie.length - KOPII_DZIENNYCH))) fs.unlinkSync(path.join(this.dirKopie, f));
@@ -300,7 +336,7 @@ class Baza {
   snapshot() {
     const collections = {};
     for (const [c, m] of this.kolekcje) if (m.size) ustaw(collections, c, Object.fromEntries(m));
-    const assets = [...this.zalaczniki.entries()].map(([id, a]) => ({ id, contentType: a.contentType, sizeBytes: a.sizeBytes }));
+    const assets = [...this.zalaczniki.entries()].map(([id, a]) => ({ id, contentType: a.contentType, sizeBytes: a.sizeBytes, createdAt: a.createdAt }));
     return { rev: this.rev, collections, assets };
   }
 
@@ -314,8 +350,8 @@ class Baza {
       const w = zapisy[i]; const gdzie = zapisy.length > 1 ? ` (zapis #${i})` : '';
       if (!czyObiekt(w)) throw bladApi(400, 'invalid_argument', `Zapis musi być obiektem${gdzie}`);
       if (!OPS.has(w.op)) throw bladApi(400, 'invalid_argument', `Nieznana operacja "${w.op}"${gdzie}`);
-      if (typeof w.coll !== 'string' || !ID_RE.test(w.coll)) throw bladApi(400, 'invalid_argument', `Nieprawidłowa nazwa kolekcji${gdzie}`);
-      if (typeof w.id !== 'string' || !ID_RE.test(w.id)) throw bladApi(400, 'invalid_argument', `Nieprawidłowy identyfikator dokumentu${gdzie}`);
+      if (!poprawneId(w.coll)) throw bladApi(400, 'invalid_argument', `Nieprawidłowa nazwa kolekcji${gdzie}`);
+      if (!poprawneId(w.id)) throw bladApi(400, 'invalid_argument', `Nieprawidłowy identyfikator dokumentu${gdzie}`);
       if (w.op !== 'delete' && !czyObiekt(w.data)) throw bladApi(400, 'invalid_argument', `Pole "data" musi być obiektem${gdzie}`);
     }
     // 2) wyliczenie nowych wartości na „nakładce”, bez ruszania bazy
@@ -365,33 +401,95 @@ class Baza {
     return true;
   }
 
+  /** Pełna kopia bieżącego stanu w formacie aplikacji (GET /api/kopia). */
   kopiaDoPobrania() {
-    const collections = this.snapshot().collections;
-    const assets = [];
-    for (const [id, a] of this.zalaczniki) {
-      let dataUrl = null;
-      try { dataUrl = `data:${a.contentType};base64,${fs.readFileSync(path.join(this.dirZal, id)).toString('base64')}`; } catch (e) { /* brak pliku */ }
-      assets.push({ id, contentType: a.contentType, sizeBytes: a.sizeBytes, createdAt: a.createdAt, dataUrl });
-    }
-    return { format: 'ewidencja-palet-kopia', wersja: 1, app: APP, version: VERSION, utworzono: new Date().toISOString(), rev: this.rev, collections, assets };
+    const s = this.snapshot();
+    const assets = {};
+    for (const [id, a] of this.zalaczniki) ustaw(assets, id, a);
+    return doKopiiAplikacji({ rev: s.rev, collections: s.collections, assets }, this.dirZal);
   }
+}
+
+/* ---------------------------- format kopii aplikacji ----------------------------
+   Ten sam plik, który daje „Ustawienia i kopia → Pobierz kopię (.json)” (w każdej wersji):
+     {app:'ewidencja-palet', format:1, exportedAt, source, couriers:[{id,...}], transactions:[{id,...}],
+      meta:{counters}, logos:{<id logo>: 'data:image/…;base64,…'}}
+   Dodatkowo (aplikacja te pola pomija): rev oraz pozostale = dokumenty spoza kurierów/operacji/liczników
+   (np. meta/settings), żeby odtworzenie bazy przez serwer niczego nie gubiło. */
+function dataUrlNaBufor(du) {
+  const m = typeof du === 'string' && /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)(;[^,]*)?,(.*)$/is.exec(du);
+  if (!m) return null;
+  const base64 = /;base64/i.test(m[2] || '');
+  try { return { contentType: m[1].toLowerCase(), buf: base64 ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8') }; } catch (e) { return null; }
+}
+function doKopiiAplikacji(stan, dirZal) {
+  const kol = stan.collections || {};
+  const zId = (docs) => Object.entries(docs || {}).map(([id, d]) => ({ id, ...d }));
+  const couriers = zId(kol.couriers).sort((a, b) => (Number.isFinite(a.order) ? a.order : 999) - (Number.isFinite(b.order) ? b.order : 999));
+  const transactions = zId(kol.transactions);
+  const meta = kol.meta || {};
+  const pozostale = {};
+  for (const [c, docs] of Object.entries(kol)) {
+    if (c === 'couriers' || c === 'transactions') continue;
+    for (const [id, d] of Object.entries(docs)) {
+      if (c === 'meta' && id === 'counters') continue;
+      ustaw(grupa(pozostale, c), id, d);
+    }
+  }
+  const logos = {};
+  const assets = stan.assets || {};
+  for (const c of couriers) {
+    const id = c.logoAssetId;
+    const ma = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    if (typeof id !== 'string' || !ASSET_ID_RE.test(id) || ma(logos, id)) continue;
+    try {
+      const typ = (ma(assets, id) && assets[id].contentType) || 'application/octet-stream';
+      ustaw(logos, id, `data:${typ};base64,${fs.readFileSync(path.join(dirZal, id)).toString('base64')}`);
+    } catch (e) { /* brak pliku logo — kopia bez niego */ }
+  }
+  return {
+    app: APP, format: 1, exportedAt: new Date().toISOString(), source: 'server', appVersion: `serwer ${VERSION}`,
+    couriers, transactions, meta: { counters: meta.counters || {} }, logos,
+    rev: stan.rev || 0, pozostale,
+  };
+}
+function zKopiiAplikacji(k) {
+  const collections = {};
+  const dodaj = (c, id, d) => {
+    if (!poprawneId(c) || !poprawneId(id) || !czyObiekt(d)) throw new Error(`nieprawidłowy wpis "${c}/${id}"`);
+    ustaw(grupa(collections, c), id, d);
+  };
+  const bezId = (x) => { const o = {}; for (const [kk, v] of Object.entries(x)) if (kk !== 'id' && v !== undefined) ustaw(o, kk, v); return o; };
+  for (const c of k.couriers) { if (!czyObiekt(c)) throw new Error('nieprawidłowy kurier'); dodaj('couriers', c.id, bezId(c)); }
+  for (const t of k.transactions) { if (!czyObiekt(t)) throw new Error('nieprawidłowa operacja'); dodaj('transactions', t.id, bezId(t)); }
+  if (czyObiekt(k.pozostale)) for (const [c, docs] of Object.entries(k.pozostale)) if (czyObiekt(docs)) for (const [id, d] of Object.entries(docs)) dodaj(c, id, d);
+  if (k.meta && czyObiekt(k.meta.counters) && Object.keys(k.meta.counters).length) dodaj('meta', 'counters', k.meta.counters);
+  const assets = {};
+  if (czyObiekt(k.logos)) {
+    for (const [id, du] of Object.entries(k.logos)) {
+      const d = dataUrlNaBufor(du);
+      if (ASSET_ID_RE.test(id) && d) ustaw(assets, id, { contentType: d.contentType, sizeBytes: d.buf.length, createdAt: 0 });
+    }
+  }
+  return { rev: Number.isInteger(k.rev) && k.rev >= 0 ? k.rev : 0, collections, assets, logos: k.logos };
 }
 
 function bladApi(status, code, message) { const e = new Error(message); e.status = status; e.code = code; e.api = true; return e; }
 
 /* ---------------------------- HTTP ---------------------------- */
+// Celowo bez .json i .md: w folderze aplikacji leżą często pobrane kopie zapasowe (*.json) — nie serwujemy ich.
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
-  '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
   '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.otf': 'font/otf',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
   '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.avif': 'image/avif',
   '.webmanifest': 'application/manifest+json', '.pdf': 'application/pdf',
 };
 // foldery/pliki, których nigdy nie serwujemy (oprócz plików z kropką i DATA_DIR)
-const ZAKAZANE = new Set(['server.js', 'node_modules', 'testy', 'narzedzia', 'dane']);
+const ZAKAZANE = new Set(['server.js', 'node_modules', 'testy', 'narzedzia', 'dane', 'zrodlo']);
 
 function wyslijJson(res, status, obj, naglowki) {
   const body = JSON.stringify(obj);
@@ -430,6 +528,7 @@ async function czytajJson(req) {
 function stworzSerwer(cfg, log) {
   const baza = new Baza(cfg.dataDir, log);
   const klienciSse = new Set();
+  const dzierzawy = new Map();   // "coll\u0000id" -> {holder, exp, ver} — krótkie dzierżawy acquire() (tylko w pamięci)
   const serverId = noweId(12);
   let dataDirReal = cfg.dataDir; let rootReal = ROOT;
 
@@ -484,6 +583,32 @@ function stworzSerwer(cfg, log) {
       rozeslij(zmiany, clientId);
       return wyslijJson(res, 200, { ok: true, rev: zmiany.length ? zmiany[zmiany.length - 1].rev : baza.rev, results: zmiany.map(z => ({ op: z.op, coll: z.coll, id: z.id, rev: z.rev, data: z.data })) });
     }
+    if (sciezka === '/api/acquire') {
+      // kooperacyjna dzierżawa dokumentu (DocumentReference.acquire na platformie Claude): zajęta przez
+      // innego posiadacza i ważna → {acquired:false, expiresAt}; wolna/wygasła/własna → przyznana (odnowiona)
+      if (metoda !== 'POST') throw bladApi(405, 'method_not_allowed', 'Dozwolone: POST');
+      const b = await czytajJson(req);
+      if (!czyObiekt(b)) throw bladApi(400, 'invalid_argument', 'Oczekiwano obiektu JSON');
+      if (!poprawneId(b.coll) || !poprawneId(b.id)) throw bladApi(400, 'invalid_argument', 'Nieprawidłowa ścieżka dokumentu');
+      if (typeof b.holder !== 'string' || !b.holder || b.holder.length > 200) throw bladApi(400, 'invalid_argument', 'Wymagane pole "holder" (1–200 znaków)');
+      if (b.data !== undefined && b.data !== null && !czyObiekt(b.data)) throw bladApi(400, 'invalid_argument', 'Pole "data" musi być obiektem');
+      const ttl = Math.min(600000, Math.max(1000, Number(b.ttlMs) || 30000));
+      const teraz = Date.now(), klucz = `${b.coll}\u0000${b.id}`, obecna = dzierzawy.get(klucz);
+      if (obecna && obecna.holder !== b.holder && obecna.exp > teraz) return wyslijJson(res, 200, { acquired: false, expiresAt: new Date(obecna.exp).toISOString() });
+      if (dzierzawy.size > 1000) for (const [k, d] of dzierzawy) if (d.exp <= teraz) dzierzawy.delete(k);
+      const moja = { holder: b.holder, exp: teraz + ttl, ver: (obecna ? obecna.ver : 0) + 1 };
+      dzierzawy.set(klucz, moja); // przed jakimkolwiek await — drugie żądanie już widzi dzierżawę
+      let change = null;
+      if (b.data && Object.keys(b.data).length) {
+        const m = baza.kolekcje.get(b.coll);
+        const zmiany = baza.zastosuj([{ op: m && m.has(b.id) ? 'update' : 'set', coll: b.coll, id: b.id, data: b.data }]);
+        try { if (zmiany.length) await baza.utrwal(); }
+        catch (e) { if (dzierzawy.get(klucz) === moja) dzierzawy.delete(klucz); throw e; }
+        rozeslij(zmiany, typeof b.clientId === 'string' ? b.clientId.slice(0, 100) : null);
+        if (zmiany.length) change = { coll: b.coll, id: b.id, rev: zmiany[0].rev, data: zmiany[0].data };
+      }
+      return wyslijJson(res, 200, { acquired: true, version: moja.ver, expiresAt: new Date(moja.exp).toISOString(), holder: b.holder, change });
+    }
     if (sciezka === '/api/events') {
       if (metoda !== 'GET') throw bladApi(405, 'method_not_allowed', 'Dozwolone: GET');
       res.writeHead(200, {
@@ -510,7 +635,7 @@ function stworzSerwer(cfg, log) {
       const buf = await czytajCialo(req, LIMIT_ASSET);
       if (!buf.length) throw bladApi(400, 'invalid_argument', 'Pusty plik');
       const a = await baza.dodajZalacznik(buf, ct);
-      return wyslijJson(res, 200, { id: a.id, url: `/_blob/${a.id}`, sizeBytes: a.sizeBytes, contentType: a.contentType });
+      return wyslijJson(res, 200, { id: a.id, url: `/_blob/${a.id}`, sizeBytes: a.sizeBytes, contentType: a.contentType, createdAt: a.createdAt });
     }
     const mA = /^\/api\/assets\/([^/]+)$/.exec(sciezka);
     if (mA) {

@@ -204,7 +204,9 @@ test('zasoby (loga): wgrywanie, serwowanie, lista, usuwanie, limity', async () =
   assert.equal(r304.status, 304);
 
   const s = await snapshot(S.port);
-  assert.deepEqual(s.assets.find(a => a.id === id), { id, contentType: 'image/png', sizeBytes: PNG_1X1.length });
+  const wpis = s.assets.find(a => a.id === id);
+  assert.equal(typeof wpis.createdAt, 'number');
+  assert.deepEqual(wpis, { id, contentType: 'image/png', sizeBytes: PNG_1X1.length, createdAt: wpis.createdAt });
   r = await zadanie(S.port, { path: '/api/assets' });
   assert.equal(r.status, 200);
   assert.ok(r.json.assets.some(a => a.id === id && a.url === url));
@@ -231,16 +233,72 @@ test('zasoby (loga): wgrywanie, serwowanie, lista, usuwanie, limity', async () =
   assert.equal(r.status, 404);
 });
 
-test('GET /api/kopia — cała baza do pobrania, loga jako data URL', async () => {
-  await zapisz(S.port, { op: 'set', coll: 'couriers', id: 'kop', data: { name: 'Kopia', order: 9 } });
+test('GET /api/kopia — cała baza w formacie kopii aplikacji (do wczytania w „Wczytaj kopię z pliku”), loga jako data URL', async () => {
   const up = await zadanie(S.port, { method: 'POST', path: '/api/assets', body: PNG_1X1, headers: { 'Content-Type': 'image/png' } });
+  await zapisz(S.port, { op: 'set', coll: 'couriers', id: 'kop', data: { name: 'Kopia', order: 9, logoAssetId: up.json.id } });
+  await zapisz(S.port, { op: 'set', coll: 'transactions', id: 'tk1', data: { kurierId: 'kop', kurierNazwa: 'Kopia', typ: 'wydanie', ilosc: 2, data: '2026-10-01', uwagi: '', createdAt: 1, nr: 'WZ-00007' } });
+  await zapisz(S.port, { op: 'set', coll: 'meta', id: 'counters', data: { wz: 7, pz: 0 } });
+  await zapisz(S.port, { op: 'set', coll: 'meta', id: 'settings', data: { seeded: true } });
   const r = await zadanie(S.port, { path: '/api/kopia' });
   assert.equal(r.status, 200);
   assert.match(r.headers['content-disposition'], /^attachment; filename="ewidencja-palet-kopia-\d{4}-\d{2}-\d{2}\.json"$/);
-  assert.deepEqual(r.json.collections.couriers.kop, { name: 'Kopia', order: 9 });
-  const a = r.json.assets.find(x => x.id === up.json.id);
-  assert.equal(a.dataUrl, `data:image/png;base64,${PNG_1X1.toString('base64')}`);
-  assert.equal(typeof r.json.rev, 'number');
+  const k = r.json;
+  // dokładnie to, czego wymaga parseBackup() aplikacji
+  assert.equal(k.app, 'ewidencja-palet'); assert.equal(k.format, 1); assert.equal(k.source, 'server');
+  assert.ok(Array.isArray(k.couriers) && Array.isArray(k.transactions));
+  assert.deepEqual(k.couriers.find(c => c.id === 'kop'), { id: 'kop', name: 'Kopia', order: 9, logoAssetId: up.json.id });
+  assert.deepEqual(k.transactions.find(t => t.id === 'tk1'), { id: 'tk1', kurierId: 'kop', kurierNazwa: 'Kopia', typ: 'wydanie', ilosc: 2, data: '2026-10-01', uwagi: '', createdAt: 1, nr: 'WZ-00007' });
+  assert.deepEqual(k.meta, { counters: { wz: 7, pz: 0 } });
+  assert.equal(k.logos[up.json.id], `data:image/png;base64,${PNG_1X1.toString('base64')}`);
+  // dodatkowo (aplikacja to pomija): reszta bazy, żeby serwer mógł odtworzyć wszystko
+  assert.deepEqual(k.pozostale.meta.settings, { seeded: true });
+  assert.equal(typeof k.rev, 'number');
+  for (const [c, id] of [['couriers', 'kop'], ['transactions', 'tk1'], ['meta', 'counters'], ['meta', 'settings']]) await zapisz(S.port, { op: 'delete', coll: c, id });
+});
+
+test('update scala zagnieżdżone obiekty rekurencyjnie (jak platforma), tablice zastępuje, __delete__ działa głęboko', async () => {
+  await zapisz(S.port, { op: 'set', coll: 'meta', id: 'gl', data: { a: { b: 1, c: { d: 2, e: 3 }, lista: [1, 2] }, x: 1, usun: { __delete__: true }, z: { w: { __delete__: true }, q: 1 } } });
+  let s = await snapshot(S.port);
+  assert.deepEqual(s.collections.meta.gl, { a: { b: 1, c: { d: 2, e: 3 }, lista: [1, 2] }, x: 1, z: { q: 1 } }, 'set nie zapisuje znaczników __delete__');
+  await zapisz(S.port, { op: 'update', coll: 'meta', id: 'gl', data: { a: { c: { d: 20, e: { __delete__: true } }, lista: [9], nowe: { k: { __delete__: true }, m: 1 } }, x: { y: 1 } } });
+  s = await snapshot(S.port);
+  assert.deepEqual(s.collections.meta.gl, { a: { b: 1, c: { d: 20 }, lista: [9], nowe: { m: 1 } }, x: { y: 1 }, z: { q: 1 } });
+  await zapisz(S.port, { op: 'delete', coll: 'meta', id: 'gl' });
+});
+
+test('POST /api/acquire — dzierżawa: zajęta/wolna/odnowienie/wygaśnięcie, data scalane i ogłaszane przez SSE', async () => {
+  const k = await klientSse(S.port);
+  try {
+    await k.czekaj(z => z.event === 'hello');
+    const acq = (o) => jsonPost(S.port, '/api/acquire', { coll: 'meta', id: 'numeracja', ...o });
+    let r = await acq({ holder: 'A', ttlMs: 1000 });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.acquired, true); assert.equal(r.json.holder, 'A'); assert.equal(typeof r.json.version, 'number');
+    assert.ok(Date.parse(r.json.expiresAt) > Date.now());
+    r = await acq({ holder: 'B', ttlMs: 1000 });
+    assert.deepEqual(Object.keys(r.json).sort(), ['acquired', 'expiresAt']);
+    assert.equal(r.json.acquired, false, 'zajęta przez A');
+    r = await acq({ holder: 'A', ttlMs: 1000 });
+    assert.equal(r.json.acquired, true, 'ten sam posiadacz odnawia');
+    // równoległe próby: dokładnie jedna wygrywa
+    const wyniki = await Promise.all(['C1', 'C2', 'C3', 'C4'].map((h) => jsonPost(S.port, '/api/acquire', { coll: 'meta', id: 'rownolegle', holder: h, ttlMs: 5000 })));
+    assert.equal(wyniki.filter(x => x.json.acquired).length, 1);
+    // ttl przycinane do min. 1 s; po wygaśnięciu inny posiadacz dostaje dzierżawę
+    await new Promise(res => setTimeout(res, 1100));
+    r = await acq({ holder: 'B', ttlMs: 10, data: { przez: 'B', usun: { __delete__: true } } });
+    assert.equal(r.json.acquired, true);
+    assert.ok(Date.parse(r.json.expiresAt) - Date.now() > 500, 'ttlMs < 1000 przycięte do 1000');
+    assert.deepEqual(r.json.change.data, { przez: 'B' });
+    const z = await k.czekaj(e => e.event === 'change' && e.data.id === 'numeracja');
+    assert.deepEqual(z.data.data, { przez: 'B' });
+    assert.deepEqual((await snapshot(S.port)).collections.meta.numeracja, { przez: 'B' });
+    // walidacja
+    for (const zle of [{ holder: '' }, { holder: 5 }, { holder: 'x', data: [1] }, { holder: 'x', coll: 'zła nazwa' }]) {
+      r = await jsonPost(S.port, '/api/acquire', { coll: 'meta', id: 'n', ...zle });
+      assert.equal(r.status, 400, JSON.stringify(zle));
+    }
+    await zapisz(S.port, { op: 'delete', coll: 'meta', id: 'numeracja' });
+  } finally { k.zamknij(); }
 });
 
 test('pliki statyczne: MIME, 304, brak dostępu do server.js, danych, plików z kropką, path traversal', async () => {
@@ -272,6 +330,7 @@ test('pliki statyczne: MIME, 304, brak dostępu do server.js, danych, plików z 
     '/fonts/..%5c..%5cserver.js', '/%2e%2e/%2e%2e/%2e%2e/etc/passwd', '/../../../../etc/passwd', '//etc/passwd',
     '/dane/baza.json', '/.gitignore', '/.git/config', '/%2egitignore', '/testy/dane-testowe.json', '/narzedzia/zbuduj.js',
     '/fonts', '/fonts/', '/index.html%00.js', '/Dockerfile', '/docker-compose.yml', '/uruchom.sh',
+    '/package.json', '/INSTRUKCJA.md', '/zrodlo/aplikacja.html', '/.dockerignore', '/Uruchom%20serwer%20(Windows).bat',
     `/${encodeURIComponent(path.join(dir, 'baza.json'))}`, '/C:%5cWindows%5cwin.ini',
   ];
   for (const p of zablokowane) {
@@ -296,10 +355,16 @@ test('DATA_DIR wewnątrz folderu aplikacji też nie jest serwowany', async () =>
       const r = await zadanie(s2.port, { path: p });
       assert.equal(r.status, 404, p);
     }
-    // kontrola: zwykły plik JSON w katalogu aplikacji byłby serwowany (więc 404 wyżej to zasługa ochrony DATA_DIR)
+    // kontrola: plik tekstowy w INNYM folderze obok byłby serwowany (więc 404 wyżej to zasługa ochrony DATA_DIR)
+    fs.mkdirSync(`${wew}-inny`); sprzatanie.push(`${wew}-inny`);
+    fs.writeFileSync(path.join(`${wew}-inny`, 'kontrola.txt'), 'x');
+    assert.equal((await zadanie(s2.port, { path: `/${nazwa}-inny/kontrola.txt` })).status, 200);
+    fs.writeFileSync(path.join(wew, 'kontrola.txt'), 'x');
+    assert.equal((await zadanie(s2.port, { path: `/${nazwa}/kontrola.txt` })).status, 404);
+    // pliki *.json w folderze aplikacji (np. pobrane kopie zapasowe) nie są serwowane nigdy
     fs.writeFileSync(path.join(wew, '..', `${nazwa}.json`), '{}');
     sprzatanie.push(path.join(wew, '..', `${nazwa}.json`));
-    assert.equal((await zadanie(s2.port, { path: `/${nazwa}.json` })).status, 200);
+    assert.equal((await zadanie(s2.port, { path: `/${nazwa}.json` })).status, 404);
   } finally { await s2.zatrzymaj(); }
 });
 
@@ -326,8 +391,16 @@ test('trwałość po restarcie (SIGTERM → kod 0), zapis atomowy, kopia dzienna
     assert.deepEqual(po.assets, przed.assets);
     const blob = await zadanie(s2.port, { path: `/_blob/${up.json.id}` });
     assert.equal(blob.status, 200); assert.ok(blob.buf.equals(PNG_1X1));
-    // kopia dzienna powstała przy starcie (baza już istniała)
-    assert.ok(fs.existsSync(path.join(d, 'kopie', `baza-${dzis}.json`)), 'brak kopii dziennej');
+    // kopia dzienna powstała przy starcie (baza już istniała) — w formacie kopii aplikacji, z logo
+    const plikKopii = path.join(d, 'kopie', `baza-${dzis}.json`);
+    assert.ok(fs.existsSync(plikKopii), 'brak kopii dziennej');
+    const kopia = JSON.parse(fs.readFileSync(plikKopii, 'utf8'));
+    assert.equal(kopia.app, 'ewidencja-palet'); assert.equal(kopia.format, 1);
+    // stan z dysku sprzed drugiego zapisu tego dnia (pierwszy zapis dopiero utworzył baza.json)
+    assert.deepEqual(kopia.couriers, [{ id: 'dpd', name: 'DPD', order: 1 }]);
+    assert.deepEqual(kopia.transactions, []);
+    assert.deepEqual(kopia.meta, { counters: {} });
+    assert.equal(kopia.rev, 1);
     // kolejny zapis działa po restarcie i podbija rev
     const r = await zapisz(s2.port, { op: 'set', coll: 'meta', id: 'po', data: { a: 1 } });
     assert.equal(r.json.rev, przed.rev + 1);
@@ -365,6 +438,35 @@ test('uszkodzony baza.json → odłożony jako baza.uszkodzona-*.json, dane z na
     assert.match(s3.bledy(), /PUSTĄ bazą/);
     assert.deepEqual((await snapshot(s3.port)).collections, {});
   } finally { await s3.zatrzymaj(); }
+});
+
+test('odtworzenie z kopii dziennej w formacie aplikacji: dane, liczniki, inne dokumenty i brakujące pliki logo', async () => {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  fs.mkdirSync(path.join(d, 'kopie'), { recursive: true });
+  const logo = `data:image/png;base64,${PNG_1X1.toString('base64')}`;
+  const kopia = {
+    app: 'ewidencja-palet', format: 1, exportedAt: '2026-10-02T06:00:00.000Z', source: 'server', rev: 12,
+    couriers: [{ id: 'dpd', name: 'DPD', order: 1, logoAssetId: 'logo1' }],
+    transactions: [{ id: 't1', kurierId: 'dpd', kurierNazwa: 'DPD', typ: 'wydanie', ilosc: 4, data: '2026-10-01', uwagi: '', createdAt: 5, nr: 'WZ-00001' }],
+    meta: { counters: { wz: 1, pz: 0 } }, logos: { logo1: logo }, pozostale: { meta: { settings: { seeded: true } } },
+  };
+  fs.writeFileSync(path.join(d, 'kopie', 'baza-2026-10-02.json'), JSON.stringify(kopia));
+  fs.writeFileSync(path.join(d, 'baza.json'), '{"rev": 1, "collections": {"cour');
+  const s2 = await uruchomSerwer({ dataDir: d });
+  try {
+    assert.match(s2.bledy(), /PRZYWRÓCONO dane z kopii: .*baza-2026-10-02\.json/);
+    const s = await snapshot(s2.port);
+    assert.equal(s.rev, 12);
+    assert.deepEqual(s.collections, {
+      couriers: { dpd: { name: 'DPD', order: 1, logoAssetId: 'logo1' } },
+      transactions: { t1: { kurierId: 'dpd', kurierNazwa: 'DPD', typ: 'wydanie', ilosc: 4, data: '2026-10-01', uwagi: '', createdAt: 5, nr: 'WZ-00001' } },
+      meta: { counters: { wz: 1, pz: 0 }, settings: { seeded: true } },
+    });
+    const blob = await zadanie(s2.port, { path: '/_blob/logo1' });
+    assert.equal(blob.status, 200, 'logo odtworzone z kopii');
+    assert.ok(blob.buf.equals(PNG_1X1));
+    assert.equal(blob.headers['content-type'], 'image/png');
+  } finally { await s2.zatrzymaj(); }
 });
 
 test('kopie dzienne: zostaje 30 najnowszych', async () => {
@@ -497,6 +599,45 @@ test('EP_UZYTKOWNIK (Docker/Synology): root nadaje folderowi danych właściciel
   s2 = await uruchomSerwer({ dataDir: d3, env: { EP_UZYTKOWNIK: '1234:1234' } });
   try { assert.equal(uidProcesu(s2.proc.pid), 1234); assert.equal(fs.statSync(d3).gid, 1234); } finally { await s2.zatrzymaj(); }
   await assert.rejects(uruchomSerwer({ dataDir: d3, env: { EP_UZYTKOWNIK: 'janek' } }), /EP_UZYTKOWNIK/);
+});
+
+test('kontrola zdrowia (Docker HEALTHCHECK): 0 gdy serwer odpowiada (także z hasłem), 1 gdy nie', async () => {
+  const { spawnSync } = require('child_process');
+  const zdrowie = (env) => spawnSync(process.execPath, [path.join(KATALOG, 'narzedzia', 'kontrola-zdrowia.js')], { env: { ...process.env, EP_HASLO: '', ...env }, timeout: 10000 }).status;
+  assert.equal(zdrowie({ PORT: String(S.port) }), 0);
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const s2 = await uruchomSerwer({ dataDir: d, env: { EP_HASLO: 'h4slo' } });
+  try {
+    assert.equal(zdrowie({ PORT: String(s2.port), EP_HASLO: 'h4slo' }), 0);
+    assert.equal(zdrowie({ PORT: String(s2.port), EP_HASLO: 'zle' }), 1);
+  } finally { await s2.zatrzymaj(); }
+  assert.equal(zdrowie({ PORT: String(s2.port) }), 1, 'serwer zatrzymany');
+});
+
+test('HOST=0.0.0.0 wypisuje adresy w sieci lokalnej; --otworz otwiera przeglądarkę (xdg-open/open/start)', { skip: process.platform === 'win32' && 'test dla Linuksa/macOS' }, async () => {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const bin = tymczasowyKatalog('ep-bin-'); sprzatanie.push(bin);
+  const znacznik = path.join(bin, 'otwarto.txt');
+  for (const nazwa of ['xdg-open', 'open']) {
+    fs.writeFileSync(path.join(bin, nazwa), `#!/bin/sh\necho "$1" > "${znacznik}"\n`, { mode: 0o755 });
+  }
+  const { spawn } = require('child_process');
+  const { wolnyPort } = require('./pomocnicy-serwera');
+  const port = await wolnyPort();
+  const proc = spawn(process.execPath, [path.join(KATALOG, 'server.js'), '--otworz'], { env: { ...process.env, PORT: String(port), HOST: '0.0.0.0', DATA_DIR: d, PATH: `${bin}:${process.env.PATH}`, EP_HASLO: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = ''; proc.stdout.on('data', (c) => { out += c; });
+  try {
+    const koniec = Date.now() + 10000;
+    while (!fs.existsSync(znacznik) && Date.now() < koniec) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(fs.existsSync(znacznik), `przeglądarka nie została otwarta; wyjście:\n${out}`);
+    assert.equal(fs.readFileSync(znacznik, 'utf8').trim(), `http://localhost:${port}`);
+    assert.match(out, new RegExp(`Na tym komputerze:\\s+http://localhost:${port}`));
+    assert.match(out, /W sieci lokalnej:\s+(http:\/\/\d+\.\d+\.\d+\.\d+:\d+|\(nie wykryto połączenia sieciowego\))/);
+    assert.match(out, /Dane zapisywane w:/);
+  } finally {
+    proc.kill('SIGTERM');
+    await new Promise((r) => proc.on('exit', r));
+  }
 });
 
 test('zajęty port → czytelny błąd i kod wyjścia 1', async () => {

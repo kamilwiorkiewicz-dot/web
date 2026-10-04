@@ -6,6 +6,8 @@
 //   (c) brak błędów w konsoli (w fazach bez celowo wywołanych awarii)
 //   (d) semantyka API bazy (where/orderBy/limit/onSnapshot/docChanges/update/...)
 //   (e) tryby awaryjne: localStorage, sama pamięć (z ostrzeżeniem), brak BroadcastChannel (Safari 14)
+//   (b2) serwer niedostępny przy otwarciu, (b3) serwer przywrócony z kopii, (b4) ukryta karta zwalnia SSE
+//   (f) nowe funkcje aplikacji w obu trybach: wydruki WZ/PZ, rozliczenie CSV, kopia tam i z powrotem
 'use strict';
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -29,10 +31,13 @@ const BANER_OFFLINE = 'Brak połączenia z serwerem — zmiany nie są zapisywan
 const sprzatanie = [];
 let przegladarka;
 
+// EP_ZRODLO=testy/baseline-v2.html — sprawdzenie zgodności z inną (np. zamrożoną) wersją aplikacji:
+//   node narzedzia/zbuduj.js --zrodlo testy/baseline-v2.html && EP_ZRODLO=testy/baseline-v2.html node testy/test-przegladarka.js
+const ZRODLO = process.env.EP_ZRODLO ? path.resolve(process.env.EP_ZRODLO) : path.join(KATALOG, 'zrodlo', 'aplikacja.html');
 before(async () => {
-  const zbudowany = zbuduj(fs.readFileSync(path.join(KATALOG, 'zrodlo', 'aplikacja.html'), 'utf8'));
+  const zbudowany = zbuduj(fs.readFileSync(ZRODLO, 'utf8'));
   assert.ok(fs.existsSync(INDEX) && fs.readFileSync(INDEX, 'utf8') === zbudowany,
-    'index.html jest nieaktualny względem zrodlo/aplikacja.html — uruchom: node narzedzia/zbuduj.js');
+    `index.html jest nieaktualny względem ${path.relative(KATALOG, ZRODLO)} — uruchom: node narzedzia/zbuduj.js`);
   przegladarka = await chromium.launch();
 });
 after(async () => {
@@ -90,6 +95,59 @@ async function logoWidoczne(page, fragmentSrc) {
 async function idLogo(page, kurierId) {
   return page.evaluate((id) => window.claude.use('db').then((db) => db.collection('couriers').doc(id).get()).then((s) => s.data().logoAssetId), kurierId);
 }
+// pobranie pliku wywołanego kliknięciem: {nazwa, tekst}
+async function pobierz(page, selektor) {
+  const [d] = await Promise.all([page.waitForEvent('download'), page.click(selektor)]);
+  return { nazwa: d.suggestedFilename(), sciezka: await d.path(), tekst: fs.readFileSync(await d.path(), 'utf8') };
+}
+// „Ustawienia i kopia → Wczytaj kopię z pliku” → tryb → (Zastąp: potwierdzenie) → komunikat
+const doUstawien = (page) => page.locator('#settingsNav:visible, #settingsMobile:visible').first().click();
+async function wczytajKopie(page, plik, tryb) {
+  await doUstawien(page);
+  await page.waitForSelector('#backupFile', { state: 'attached' });
+  await page.setInputFiles('#backupFile', plik);
+  await page.waitForSelector('#importGo');
+  await page.check(`#modalRoot input[name="importMode"][value="${tryb}"]`);
+  await page.click('#importGo');
+  // aplikacja pyta o potwierdzenie „Zastąp” tylko wtedy, gdy ma już jakieś operacje
+  const maOperacje = await page.evaluate(() => typeof transactions !== 'undefined' && transactions.length > 0);
+  if (tryb === 'replace' && maOperacje) { await page.waitForSelector('#confirmBtn'); await page.click('#confirmBtn'); }
+  await czekajNaToast(page, /Wczytano kopię/, false, 60000);
+}
+// wydruk WZ/PZ z historii: podgląd, „Drukuj / PDF” (window.print), „Pobierz plik” (.html)
+async function sprawdzWydruk(page) {
+  await idzDo(page, 'history');
+  await page.waitForSelector('[data-action="print-op"]');
+  await page.evaluate(() => { window.__wydruki = 0; window.print = () => { window.__wydruki++; }; });
+  await page.locator('[data-action="print-op"]:visible').first().click();
+  await page.waitForSelector('.print-overlay .print-page .doc');
+  await page.click('[data-print="print"]');
+  assert.equal(await page.evaluate(() => window.__wydruki), 1, 'Drukuj / PDF wywołuje window.print()');
+  const plik = await pobierz(page, '[data-print="download"]');
+  assert.match(plik.nazwa, /^(WZ|PZ)-\d{5}\.html$/);
+  assert.match(plik.tekst, /^<!DOCTYPE html>/);
+  assert.ok(plik.tekst.includes(plik.nazwa.replace('.html', '')), 'numer dokumentu w pliku');
+  assert.match(plik.tekst, /Dowód (wydania|zwrotu) palet/);
+  await page.click('[data-print="close"]');
+  return plik;
+}
+// rozliczenie kuriera: CSV i wydruk
+async function sprawdzRozliczenie(page, kurierId, nr) {
+  await idzDo(page, 'dashboard');
+  await page.click(`.courier-card[data-id="${kurierId}"]`);
+  await page.waitForSelector('[data-action="st-csv"]');
+  const csv = await pobierz(page, '[data-action="st-csv"]');
+  assert.match(csv.nazwa, new RegExp(`^rozliczenie-${kurierId}-\\d{4}-\\d{2}-\\d{2}-\\d{4}-\\d{2}-\\d{2}\\.csv$`));
+  assert.equal(csv.tekst.charCodeAt(0), 0xFEFF, 'CSV z BOM (Excel)');
+  assert.ok(csv.tekst.includes(nr), `w rozliczeniu brak ${nr}`);
+  await page.click('[data-action="st-print"]');
+  await page.waitForSelector('.print-overlay .print-page');
+  const html = await pobierz(page, '[data-print="download"]');
+  assert.match(html.nazwa, new RegExp(`^rozliczenie-${kurierId}-.*\\.html$`));
+  assert.ok(html.tekst.includes(nr));
+  await page.click('[data-print="close"]');
+}
+const liczbaOperacji = (page) => page.evaluate(() => window.claude.use('db').then((db) => db.collection('transactions').get()).then((s) => s.size));
 const tylkoSiec = (bledy) => bledy.filter((b) => !/Failed to load resource|net::ERR_|ERR_CONNECTION|EventSource|Brak połączenia z serwerem|Serwer nie odpowiada/.test(b));
 
 /* ======================================================================
@@ -243,6 +301,11 @@ test('(b) serwer: dwa urządzenia na żywo, logo u obu, restart serwera, utrata 
     await srv.zatrzymaj();
     const baner = await A.waitForSelector('[data-ep-banner="offline"]', { timeout: 15000 });
     assert.equal(await baner.textContent(), BANER_OFFLINE);
+    // pasek nie trafia na wydruk (WZ/PZ, rozliczenie)
+    await A.emulateMedia({ media: 'print' });
+    assert.equal(await baner.evaluate((el) => getComputedStyle(el.parentNode).display), 'none', 'pasek ukryty przy drukowaniu');
+    await A.emulateMedia({ media: 'screen' });
+    assert.notEqual(await baner.evaluate((el) => getComputedStyle(el.parentNode).display), 'none');
     const styl = await baner.evaluate((el) => { const s = getComputedStyle(el); return { pos: getComputedStyle(el.parentNode).position, bg: s.backgroundColor, kolor: s.color, ramka: s.borderLeftColor }; });
     assert.equal(styl.pos, 'fixed');
     const kolorBad = await A.evaluate(() => { const t = document.createElement('i'); t.style.color = 'var(--bad)'; document.body.appendChild(t); const c = getComputedStyle(t).color; t.remove(); return c; });
@@ -280,6 +343,242 @@ test('(b) serwer: dwa urządzenia na żywo, logo u obu, restart serwera, utrata 
 });
 
 /* ======================================================================
+   (b2) strona z adresu serwera, który w chwili otwarcia nie odpowiada (np. strona z pamięci podręcznej,
+        uśpiony NAS): zostaje w trybie serwera z paskiem i czeka — NIE zapisuje po cichu w przeglądarce
+   ====================================================================== */
+test('(b2) serwer niedostępny przy otwarciu → pasek, brak zapisu w przeglądarce, po starcie serwera dane', { timeout: 90000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const port = await wolnyPort();
+  let srv = await uruchomSerwer({ dataDir: dane, port });
+  const { jsonPost } = require('./pomocnicy-serwera');
+  await jsonPost(port, '/api/write', { op: 'set', coll: 'couriers', id: 'dpd', data: { name: 'DPD', order: 1, color: '#DC0032', custom: false, enabled: true } });
+  await jsonPost(port, '/api/write', { op: 'set', coll: 'transactions', id: 't1', data: { kurierId: 'dpd', kurierNazwa: 'DPD', typ: 'wydanie', ilosc: 9, data: '2026-10-01', uwagi: '', createdAt: 1, nr: 'WZ-00001' } });
+  await jsonPost(port, '/api/write', { op: 'set', coll: 'meta', id: 'counters', data: { wz: 1, pz: 0 } });
+  await jsonPost(port, '/api/write', { op: 'set', coll: 'meta', id: 'settings', data: { seeded: true } });
+  await srv.zatrzymaj();
+  const ctx = await przegladarka.newContext();
+  // strona i skrypty „z pamięci podręcznej” (podstawione), API — prawdziwy, wyłączony serwer
+  const pliki = { '/': 'index.html', '/index.html': 'index.html', '/runtime-lokalny.js': 'runtime-lokalny.js' };
+  await ctx.route(`http://127.0.0.1:${port}/**`, (route) => {
+    const p = new URL(route.request().url()).pathname;
+    const plik = pliki[p] || (p.startsWith('/fonts/') ? p.slice(1) : null);
+    if (!plik) return route.continue();
+    const typ = plik.endsWith('.html') ? 'text/html; charset=utf-8' : plik.endsWith('.js') ? 'text/javascript' : plik.endsWith('.css') ? 'text/css' : 'font/woff2';
+    return route.fulfill({ status: 200, contentType: typ, body: fs.readFileSync(path.join(KATALOG, plik)) });
+  });
+  try {
+    const A = sledz(await ctx.newPage(), 'BEZ-SERWERA');
+    await A.goto(`http://127.0.0.1:${port}/`);
+    const baner = await A.waitForSelector('[data-ep-banner="offline"]', { timeout: 15000 });
+    assert.equal(await baner.textContent(), BANER_OFFLINE);
+    assert.deepEqual(await A.evaluate(() => [EP_LOCAL.mode, EP_LOCAL.online]), ['server', false]);
+    assert.equal(await A.evaluate(() => document.querySelectorAll('.courier-card').length), 0, 'bez serwera nie ma danych (ani domyślnych kurierów zapisanych lokalnie)');
+    const bazy = await A.evaluate(() => (indexedDB.databases ? indexedDB.databases() : Promise.resolve([])).then((l) => l.map((d) => d.name)));
+    assert.ok(!bazy.includes('ewidencja-palet'), 'nie wolno zakładać lokalnej bazy w przeglądarce');
+    srv = await uruchomSerwer({ dataDir: dane, port });
+    await A.waitForFunction(() => window.EP_LOCAL.online === true && !document.querySelector('[data-ep-banner]'), null, { timeout: 30000 });
+    await gotowa(A);
+    await saldo(A, '9 szt.');
+    assert.equal(await A.evaluate(() => EP_LOCAL.storage), 'server');
+    assert.deepEqual(tylkoSiec(A.bledy), []);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});
+
+/* ======================================================================
+   (b3) serwer uruchomiony ponownie z danymi odtworzonymi z kopii (niższy numer zmian):
+        otwarta strona przyjmuje stan serwera w całości, nie trzyma starych wersji dokumentów
+   ====================================================================== */
+test('(b3) serwer przywrócony z kopii (niższy rev) → otwarta strona pokazuje stan z kopii i dalej działa na żywo', { timeout: 90000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const port = await wolnyPort();
+  let srv = await uruchomSerwer({ dataDir: dane, port });
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'PRZYWRACANIE');
+    await A.goto(`http://127.0.0.1:${port}/`); await gotowa(A);
+    await dodajOperacje(A, { kurier: 'dpd', ilosc: 4 });
+    await czekajNaToast(A, /WZ-00001/);
+    await saldo(A, '4 szt.');
+    const stan = fs.readFileSync(path.join(dane, 'baza.json'), 'utf8'); // „kopia”: 4 palety
+    for (const n of [5, 6]) { await dodajOperacje(A, { kurier: 'dpd', ilosc: n }); await czekajNaToast(A, new RegExp(`WZ-0000${n - 3}`)); }
+    await saldo(A, '15 szt.');
+    await srv.zatrzymaj();
+    fs.writeFileSync(path.join(dane, 'baza.json'), stan); // administrator przywraca kopię
+    srv = await uruchomSerwer({ dataDir: dane, port });
+    await saldo(A, '4 szt.', 30000);
+    // zapisy po przywróceniu (nowe rev ≤ dawnym) docierają normalnie, także do drugiej karty
+    const B = sledz(await ctx.newPage(), 'PRZYWRACANIE-B');
+    await B.goto(`http://127.0.0.1:${port}/`); await gotowa(B);
+    await dodajOperacje(B, { kurier: 'dpd', ilosc: 7 });
+    await czekajNaToast(B, /WZ-00002/);
+    await saldo(A, '11 szt.');
+    await dodajOperacje(A, { kurier: 'dpd', typ: 'zwrot', ilosc: 1 });
+    await czekajNaToast(A, /PZ-00001/);
+    await saldo(B, '10 szt.');
+    assert.deepEqual(tylkoSiec([...A.bledy, ...B.bledy]), []);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});
+
+/* ======================================================================
+   (b4) karta ukryta dłużej → połączenie na żywo zwolnione (limit 6 połączeń HTTP/1.1), po powrocie stan wczytany od nowa
+   ====================================================================== */
+test('(b4) ukryta karta zwalnia połączenie SSE bez paska „brak połączenia”, po powrocie dociąga zmiany', { timeout: 90000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const srv = await uruchomSerwer({ dataDir: dane });
+  const ctx = await przegladarka.newContext();
+  await ctx.addInitScript(() => {
+    window.EP_LOCAL_OPCJE = { pauzaUkrytejKartyMs: 300 };
+    window.__widocznosc = 'visible';
+    Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get() { return window.__widocznosc; } });
+    Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get() { return window.__widocznosc === 'hidden'; } });
+  });
+  const ustawWidocznosc = (page, v) => page.evaluate((x) => { window.__widocznosc = x; document.dispatchEvent(new Event('visibilitychange')); }, v);
+  try {
+    const A = sledz(await ctx.newPage(), 'UKRYTA'), B = sledz(await ctx.newPage(), 'WIDOCZNA');
+    await A.goto(`http://127.0.0.1:${srv.port}/`); await gotowa(A);
+    await B.goto(`http://127.0.0.1:${srv.port}/`); await gotowa(B);
+    await A.waitForFunction(() => EP_LOCAL.polaczenie === 'otwarte');
+    await ustawWidocznosc(A, 'hidden');
+    await A.waitForFunction(() => EP_LOCAL.polaczenie === 'wstrzymane', null, { timeout: 5000 });
+    await dodajOperacje(B, { kurier: 'gls', ilosc: 3 });
+    await czekajNaToast(B, /WZ-00001/);
+    await A.waitForTimeout(1500);
+    assert.equal(await A.$('[data-ep-banner]'), null, 'wstrzymanie to nie awaria — bez paska');
+    assert.equal(await A.evaluate(() => EP_LOCAL.online), true);
+    await ustawWidocznosc(A, 'visible');
+    await A.waitForFunction(() => EP_LOCAL.polaczenie === 'otwarte', null, { timeout: 10000 });
+    await saldo(A, '3 szt.');
+    // i dalej na żywo
+    await dodajOperacje(B, { kurier: 'gls', ilosc: 2 });
+    await saldo(A, '5 szt.');
+    // krótkie ukrycie (krótsze niż próg) nie zrywa połączenia
+    await ustawWidocznosc(A, 'hidden'); await ustawWidocznosc(A, 'visible');
+    await A.waitForTimeout(500);
+    assert.equal(await A.evaluate(() => EP_LOCAL.polaczenie), 'otwarte');
+    assert.deepEqual([...A.bledy, ...B.bledy], []);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});
+
+/* ======================================================================
+   (b5) serwer z hasłem (EP_HASLO): strona, API, SSE i loga działają po zalogowaniu; bez hasła — 401
+   ====================================================================== */
+test('(b5) EP_HASLO: aplikacja działa po zalogowaniu (zapis, na żywo, logo), bez hasła nic nie widać', { timeout: 90000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const srv = await uruchomSerwer({ dataDir: dane, env: { EP_HASLO: 'Palety 2026!' } });
+  const url = `http://127.0.0.1:${srv.port}/`;
+  const ctxA = await przegladarka.newContext({ httpCredentials: { username: 'biuro', password: 'Palety 2026!' } });
+  const ctxB = await przegladarka.newContext({ httpCredentials: { username: 'magazyn', password: 'Palety 2026!' } });
+  const ctxObcy = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctxA.newPage(), 'HASLO-A'), B = sledz(await ctxB.newPage(), 'HASLO-B');
+    await A.goto(url); await gotowa(A);
+    await B.goto(url); await gotowa(B);
+    assert.equal(await A.evaluate(() => EP_LOCAL.mode), 'server');
+    await dodajOperacje(A, { kurier: 'dpd', ilosc: 6 });
+    await czekajNaToast(A, /WZ-00001/);
+    await saldo(B, '6 szt.');
+    await wgrajLogo(A, 'dpd', PNG_1X1);
+    const lid = await idLogo(A, 'dpd');
+    await logoWidoczne(B, `/_blob/${lid}`);
+    assert.deepEqual([...A.bledy, ...B.bledy], []);
+    const obcy = await ctxObcy.newPage();
+    const r = await obcy.goto(url);
+    assert.equal(r.status(), 401);
+    assert.ok(!(await obcy.content()).includes('Ewidencja Palet — Panel'), 'bez hasła nie ma aplikacji');
+  } finally { await ctxA.close(); await ctxB.close(); await ctxObcy.close(); await srv.zatrzymaj(); }
+});
+
+/* ======================================================================
+   (f) nowe funkcje aplikacji w obu trybach lokalnych: wydruk WZ/PZ (druk + plik), rozliczenie kuriera
+       (CSV + wydruk), kopia zapasowa: eksport → import w drugim trybie (z logo i ciągłością numeracji),
+       import kopii z /api/kopia i kopii dziennej serwera
+   ====================================================================== */
+test('(f) wydruki, rozliczenie CSV, kopia: serwer → przeglądarka → serwer, /api/kopia, kopia dzienna', { timeout: 240000 }, async () => {
+  const dane1 = tymczasowyKatalog(); sprzatanie.push(dane1);
+  const dane2 = tymczasowyKatalog(); sprzatanie.push(dane2);
+  const tmp = tymczasowyKatalog('ep-pliki-'); sprzatanie.push(tmp);
+  const srv1 = await uruchomSerwer({ dataDir: dane1 });
+  const srv2 = await uruchomSerwer({ dataDir: dane2 });
+  const ctxS = await przegladarka.newContext({ acceptDownloads: true, viewport: { width: 1300, height: 900 } });
+  const ctxP = await przegladarka.newContext({ acceptDownloads: true, viewport: { width: 1300, height: 900 } });
+  const ctxS2 = await przegladarka.newContext({ acceptDownloads: true, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const daneLogo = `data:image/png;base64,${PNG_1X1.toString('base64')}`;
+  try {
+    /* --- tryb serwera: dane, logo, wydruki, rozliczenie, kopia --- */
+    const S = sledz(await ctxS.newPage(), 'SERWER');
+    await S.goto(`http://127.0.0.1:${srv1.port}/`); await gotowa(S);
+    await dodajOperacje(S, { kurier: 'inpost', ilosc: 12, uwagi: 'kopia „test” ąę' });
+    await czekajNaToast(S, /WZ-00001/);
+    await dodajOperacje(S, { kurier: 'inpost', typ: 'zwrot', ilosc: 2 });
+    await czekajNaToast(S, /PZ-00001/);
+    await saldo(S, '10 szt.');
+    await wgrajLogo(S, 'inpost', PNG_1X1);
+    await sprawdzWydruk(S);
+    await sprawdzRozliczenie(S, 'inpost', 'WZ-00001');
+    await S.click('#settingsNav');
+    const kopiaS = await pobierz(S, '[data-action="backup-export"]');
+    const kopia = JSON.parse(kopiaS.tekst);
+    assert.equal(kopia.source, 'server');
+    assert.equal(kopia.transactions.length, 2);
+    const lidS = await idLogo(S, 'inpost');
+    assert.equal(kopia.logos[lidS], daneLogo);
+    // pełna kopia z serwera (GET /api/kopia) i kopia dzienna — oba pliki do wczytania w aplikacji
+    const apiKopia = await S.evaluate(() => fetch('/api/kopia').then((r) => r.text()));
+    const plikApi = path.join(tmp, 'api-kopia.json'); fs.writeFileSync(plikApi, apiKopia);
+    const dzienne = fs.readdirSync(path.join(dane1, 'kopie'));
+    assert.equal(dzienne.length, 1, `kopia dzienna: ${dzienne}`);
+    assert.deepEqual(S.bledy, [], 'błędy w konsoli (serwer)');
+
+    /* --- tryb przeglądarki: wczytanie kopii z serwera (Zastąp wszystko) --- */
+    const P = sledz(await ctxP.newPage(), 'PRZEGLADARKA');
+    await P.goto(URL_PLIKU); await gotowa(P);
+    assert.equal(await P.evaluate(() => EP_LOCAL.mode), 'browser');
+    await wczytajKopie(P, kopiaS.sciezka, 'replace');
+    await saldo(P, '10 szt.');
+    assert.equal(await liczbaOperacji(P), 2);
+    const lidP = await idLogo(P, 'inpost');
+    assert.ok(lidP && lidP !== lidS, 'logo wgrane od nowa, z nowym identyfikatorem');
+    await idzDo(P, 'dashboard');
+    await logoWidoczne(P, daneLogo);
+    // numeracja jest kontynuowana
+    await dodajOperacje(P, { kurier: 'dhl', ilosc: 5 });
+    await czekajNaToast(P, /WZ-00002/);
+    await sprawdzWydruk(P);
+    await sprawdzRozliczenie(P, 'dhl', 'WZ-00002');
+    await P.click('#settingsNav');
+    const kopiaP = await pobierz(P, '[data-action="backup-export"]');
+    assert.equal(JSON.parse(kopiaP.tekst).source, 'browser');
+    // Połącz z kopią z /api/kopia: nic nowego (te same operacje) — nic nie znika
+    await wczytajKopie(P, plikApi, 'merge');
+    assert.equal(await liczbaOperacji(P), 3);
+    // kopia dzienna serwera też jest plikiem kopii aplikacji
+    await wczytajKopie(P, path.join(dane1, 'kopie', dzienne[0]), 'merge');
+    assert.equal(await liczbaOperacji(P), 3);
+    assert.deepEqual(P.bledy, [], 'błędy w konsoli (przeglądarka)');
+
+    /* --- z powrotem na (inny, pusty) serwer: kopia z przeglądarki --- */
+    const S2 = sledz(await ctxS2.newPage(), 'SERWER2');
+    await S2.goto(`http://127.0.0.1:${srv2.port}/`); await gotowa(S2);
+    await wczytajKopie(S2, kopiaP.sciezka, 'replace');
+    await saldo(S2, '15 szt.');
+    assert.equal(await liczbaOperacji(S2), 3);
+    const lid2 = await idLogo(S2, 'inpost');
+    await idzDo(S2, 'dashboard');
+    await logoWidoczne(S2, `/_blob/${lid2}`);
+    await dodajOperacje(S2, { kurier: 'inpost', typ: 'zwrot', ilosc: 1 });
+    await czekajNaToast(S2, /PZ-00002/);
+    const baza2 = JSON.parse(fs.readFileSync(path.join(dane2, 'baza.json'), 'utf8'));
+    assert.equal(Object.keys(baza2.collections.transactions).length, 4);
+    assert.deepEqual(baza2.collections.meta.counters, { wz: 2, pz: 2 });
+    assert.ok(fs.existsSync(path.join(dane2, 'zalaczniki', lid2)));
+    assert.deepEqual(S2.bledy, [], 'błędy w konsoli (serwer 2, telefon)');
+  } finally {
+    await ctxS.close(); await ctxP.close(); await ctxS2.close();
+    await srv1.zatrzymaj(); await srv2.zatrzymaj();
+  }
+});
+
+/* ======================================================================
    (d) semantyka API bazy (tryb przeglądarki, file://)
    ====================================================================== */
 test('(d) API bazy: zapytania, nasłuchy, zapisy, błędy, loga, pobieranie', { timeout: 60000 }, async () => {
@@ -292,7 +591,9 @@ test('(d) API bazy: zapytania, nasłuchy, zapisy, błędy, loga, pobieranie', { 
       const out = {};
       const usePromise = window.claude.use('db');
       out.usePromise = usePromise instanceof Promise;
+      out.useTaSamaObietnica = window.claude.use('db') === usePromise;
       const db = await usePromise;
+      out.zamrozone = Object.isFrozen(db);
       out.nieznane = await window.claude.use('cos-innego');
       const C = db.collection('test_q');
       const docs = {
@@ -326,10 +627,11 @@ test('(d) API bazy: zapytania, nasłuchy, zapisy, błędy, loga, pobieranie', { 
       const q1 = C.where('n', '>', 1); q1.orderBy('n').limit(1); // budowanie nowego zapytania nie zmienia starego
       out.czyste = await ids(q1);
       const bledy = [];
-      for (const f of [() => C.orderBy('n').orderBy('s'), () => C.where('n', '~', 1), () => C.where('s', 'in', 'a'), () => C.limit(-1), () => db.collection('zła nazwa'), () => db.doc('tylko-kolekcja'), () => C.doc('a/b')]) {
+      for (const f of [() => C.orderBy('n').orderBy('s'), () => C.where('n', '~', 1), () => C.where('s', 'in', 'a'), () => C.limit(-1), () => db.collection('zła nazwa'), () => db.doc('tylko-kolekcja'), () => C.doc('a/b'), () => C.doc('..')]) {
         try { f(); bledy.push('brak błędu'); } catch (e) { bledy.push(e.code); }
       }
       out.bledyBudowania = bledy;
+      out.sciezkaTypeError = (() => { try { db.collection('zła nazwa'); return 'brak'; } catch (e) { return e instanceof TypeError; } })();
 
       // DocumentSnapshot / deep copy
       const s = await C.doc('a').get();
@@ -341,6 +643,12 @@ test('(d) API bazy: zapytania, nasłuchy, zapisy, błędy, loga, pobieranie', { 
       // update: scalanie, __delete__, not_found
       await C.doc('a').update({ n: 4, s: { __delete__: true }, nowe: null });
       out.poUpdate = (await C.doc('a').get()).data();
+      // update scala zagnieżdżone obiekty rekurencyjnie (jak platforma), tablice zastępuje w całości
+      await C.doc('g').set({ o: { a: 1, b: { c: 2, d: 3 } }, t: [1, 2], z: { __delete__: true } });
+      out.setBezZnacznikow = (await C.doc('g').get()).data();
+      await C.doc('g').update({ o: { b: { c: 20, d: { __delete__: true } }, nowe: 1 }, t: [9] });
+      out.glebokieScalenie = (await C.doc('g').get()).data();
+      await C.doc('g').delete();
       out.updateBrak = await C.doc('brak').update({ x: 1 }).then(() => 'ok', (e) => ({ code: e.code, isError: e instanceof Error }));
       out.setZly = await C.doc('x').set([1, 2]).then(() => 'ok', (e) => e.code);
       out.setZly2 = await C.doc('x').set('tekst').then(() => 'ok', (e) => e.code);
@@ -409,20 +717,43 @@ test('(d) API bazy: zapytania, nasłuchy, zapisy, błędy, loga, pobieranie', { 
       const assets = await window.claude.use('assets');
       out.zlyTyp = await assets.upload(new Blob(['<html>'], { type: 'text/html' })).then(() => 'ok', (e) => e.code);
       out.zaDuze = await assets.upload(new Blob([new Uint8Array(4 * 1024 * 1024 + 1)], { type: 'image/png' })).then(() => 'ok', (e) => e.code);
+      out.pusty = await assets.upload(new Blob([], { type: 'image/png' })).then(() => 'ok', (e) => e.code);
+      out.nieBlob = await assets.upload('tekst').then(() => 'ok', (e) => e.code);
       const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
       const up = await assets.upload(new File([png], 'logo.png', { type: 'image/png' }));
       out.upload = { idOk: /^[a-z0-9]{20}$/.test(up.id), urlData: up.url.startsWith('data:image/png;base64,'), size: up.sizeBytes, type: up.contentType };
       out.assetUrl = window.EP_LOCAL.assetUrl(up.id) === up.url;
       const lista = await assets.list();
-      out.lista = { jest: lista.assets.some((a) => a.id === up.id), bajty: lista.usage.bytes >= png.length };
-      await assets.delete(up.id);
+      const wpis = lista.assets.find((a) => a.id === up.id);
+      out.lista = { jest: !!wpis, bajty: lista.usage.bytes >= png.length, pliki: lista.usage.files >= 1, limity: lista.usage.maxFiles > 0 && lista.usage.maxBytes > 0, createdAt: !isNaN(Date.parse(wpis.createdAt)) };
+      out.usun = await assets.delete(up.id);
+      out.usunPonownie = await assets.delete(up.id);
       out.poUsunieciu = [window.EP_LOCAL.assetUrl(up.id), (await assets.list()).assets.some((a) => a.id === up.id)];
       const bezTypu = await assets.upload(new File([png], 'logo.webp', { type: '' }));
       out.typZRozszerzenia = bezTypu.contentType;
+      out.typZOpcji = (await assets.upload(new Blob([png]), { type: 'image/png' })).contentType;
+      // delete przyjmuje też adres zwrócony przez upload()
+      out.usunPoUrl = await assets.delete(bezTypu.url);
+
+      // acquire(): dzierżawa jak na platformie
+      const L2 = db.doc('test_lease/x');
+      const a1 = await L2.acquire({ holder: 'karta-1', ttlMs: 1000 });
+      const a2 = await L2.acquire({ holder: 'karta-2', ttlMs: 1000 });
+      const a3 = await L2.acquire({ holder: 'karta-1', ttlMs: 1000 });
+      await new Promise((r) => setTimeout(r, 1100));
+      const a4 = await L2.acquire({ holder: 'karta-2', data: { kto: 'karta-2' } });
+      out.acquire = {
+        a1: [a1.acquired, a1.holder, typeof a1.version, !isNaN(Date.parse(a1.expiresAt))],
+        a2: [a2.acquired, Object.keys(a2).sort().join(',')],
+        a3: a3.acquired, a4: a4.acquired, dane: (await L2.get()).data(),
+        bezHoldera: await L2.acquire({}).then(() => 'ok', (e) => e.code),
+      };
       return out;
     });
 
     assert.equal(wynik.usePromise, true);
+    assert.equal(wynik.useTaSamaObietnica, true, 'use("db") zawsze ta sama obietnica');
+    assert.equal(wynik.zamrozone, true);
     assert.equal(wynik.nieznane, null);
     assert.deepEqual(wynik.domyslnie, ['a', 'b', 'c', 'd', 'e']);
     assert.deepEqual(wynik.eq, ['c']);
@@ -444,11 +775,14 @@ test('(d) API bazy: zapytania, nasłuchy, zapisy, błędy, loga, pobieranie', { 
     assert.deepEqual(wynik.limit, ['e', 'd']);
     assert.deepEqual(wynik.whereOrderLimit, ['b', 'a']);
     assert.deepEqual(wynik.limit0, []);
-    assert.deepEqual(wynik.bledyBudowania, Array(7).fill('invalid_argument'));
-    assert.deepEqual(wynik.snap, { id: 'a', exists: true, meta: {} });
+    assert.deepEqual(wynik.bledyBudowania, Array(8).fill('invalid_argument'));
+    assert.equal(wynik.sciezkaTypeError, true, 'zła ścieżka → TypeError (jak platforma)');
+    assert.deepEqual(wynik.snap, { id: 'a', exists: true, meta: { fromCache: false, hasPendingWrites: false } });
     assert.deepEqual(wynik.glebokaKopia, { n: 3, s: 'b', tag: ['x', 'y'], d: '2026-01-02' }, 'data() zwraca kopię');
     assert.deepEqual(wynik.nieistnieje, { exists: false, data: 'undefined' });
     assert.deepEqual(wynik.poUpdate, { n: 4, tag: ['x', 'y'], d: '2026-01-02', nowe: null });
+    assert.deepEqual(wynik.setBezZnacznikow, { o: { a: 1, b: { c: 2, d: 3 } }, t: [1, 2] });
+    assert.deepEqual(wynik.glebokieScalenie, { o: { a: 1, b: { c: 20 }, nowe: 1 }, t: [9] });
     assert.deepEqual(wynik.updateBrak, { code: 'not_found', isError: true });
     assert.equal(wynik.setZly, 'invalid_argument');
     assert.equal(wynik.setZly2, 'invalid_argument');
@@ -473,27 +807,40 @@ test('(d) API bazy: zapytania, nasłuchy, zapisy, błędy, loga, pobieranie', { 
     assert.equal(wynik.batchNicNieZapisal, false);
     assert.deepEqual(wynik.batchOk, { a: 1, b: 2 });
 
-    assert.equal(wynik.zlyTyp, 'invalid_argument');
-    assert.equal(wynik.zaDuze, 'invalid_argument');
+    assert.equal(wynik.zlyTyp, 'unsupported_type');
+    assert.equal(wynik.zaDuze, 'too_large');
+    assert.equal(wynik.pusty, 'invalid_request');
+    assert.equal(wynik.nieBlob, 'invalid_request');
     assert.deepEqual(wynik.upload, { idOk: true, urlData: true, size: PNG_1X1.length, type: 'image/png' });
     assert.equal(wynik.assetUrl, true);
-    assert.deepEqual(wynik.lista, { jest: true, bajty: true });
+    assert.deepEqual(wynik.lista, { jest: true, bajty: true, pliki: true, limity: true, createdAt: true });
+    assert.deepEqual(wynik.usun, { deleted: true });
+    assert.deepEqual(wynik.usunPonownie, { deleted: false });
     assert.deepEqual(wynik.poUsunieciu, [null, false]);
     assert.equal(wynik.typZRozszerzenia, 'image/webp');
+    assert.equal(wynik.typZOpcji, 'image/png');
+    assert.deepEqual(wynik.usunPoUrl, { deleted: true });
+    assert.deepEqual(wynik.acquire, {
+      a1: [true, 'karta-1', 'number', true], a2: [false, 'acquired,expiresAt'], a3: true, a4: true,
+      dane: { kto: 'karta-2' }, bezHoldera: 'invalid_argument',
+    });
 
     // downloads.save: tekst, bajty, Blob
     const pobrania = [];
     P.on('download', (d) => pobrania.push(d));
     await P.evaluate(async () => {
       const dl = await window.claude.use('downloads');
-      await dl.save({ filename: 'a.csv', data: '﻿x;y\r\n1;ą' });
+      window.__wynikZapisu = await dl.save({ filename: 'a.csv', data: '﻿x;y\r\n1;ą' });
       await dl.save({ filename: 'b.bin', data: new Uint8Array([1, 2, 3]) });
       await dl.save({ filename: 'c.bin', data: new Uint8Array([4, 5]).buffer });
       await dl.save({ filename: 'd/../e.json', data: new Blob(['{"a":1}'], { type: 'application/json' }) });
       window.__zlyZapis = await dl.save({ filename: '', data: 'x' }).then(() => 'ok', (e) => e.code);
+      window.__pustyZapis = await dl.save({ filename: 'pusty.txt', data: '' }).then(() => 'ok', (e) => e.code);
     });
     await P.waitForTimeout(500);
-    assert.equal(await P.evaluate(() => window.__zlyZapis), 'invalid_argument');
+    assert.deepEqual(await P.evaluate(() => window.__wynikZapisu), { status: 'saved' });
+    assert.equal(await P.evaluate(() => window.__zlyZapis), 'bad_request');
+    assert.equal(await P.evaluate(() => window.__pustyZapis), 'bad_request');
     const nazwy = pobrania.map((d) => d.suggestedFilename()).sort();
     assert.deepEqual(nazwy, ['a.csv', 'b.bin', 'c.bin', 'd_.._e.json']);
     const tresc = async (n) => fs.readFileSync(await pobrania.find((d) => d.suggestedFilename() === n).path());
@@ -535,8 +882,32 @@ test('(d2) API bazy w trybie serwera + zgodność z danymi na dysku', { timeout:
       await Promise.all(seria);
       o.ostatni = (await db.doc('test_s/x').get()).data().n;
       o.par = (await db.collection('test_par').get()).size;
+      await db.doc('test_s/g').set({ o: { a: 1, b: { c: 2 } } });
+      await db.doc('test_s/g').update({ o: { b: { d: 3 } } });
+      o.glebokie = (await db.doc('test_s/g').get()).data();
+      await db.doc('test_s/g').delete();
+      o.lease = await db.doc('test_lk/blokada').acquire({ holder: 'urzadzenie-P', ttlMs: 5000, data: { wlasciciel: 'P' } });
+      const assets = await window.claude.use('assets');
+      o.zlyTyp = await assets.upload(new Blob(['<html>'], { type: 'text/html' })).then(() => 'ok', (e) => e.code);
+      const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
+      const up = await assets.upload(new Blob([png], { type: 'image/png' }));
+      const lista = await assets.list();
+      o.listaZasobow = lista.assets.some((a) => a.id === up.id && a.url === '/_blob/' + up.id && !isNaN(Date.parse(a.createdAt))) && lista.usage.files >= 1;
+      o.usun = [await assets.delete(up.id), await assets.delete(up.id)];
       return o;
     });
+    // drugie urządzenie: dzierżawa zajęta, dane z acquire() widoczne
+    const q = await Q.evaluate(async () => {
+      const db = await window.claude.use('db');
+      return { lease: await db.doc('test_lk/blokada').acquire({ holder: 'urzadzenie-Q', ttlMs: 5000 }), dane: (await db.doc('test_lk/blokada').get()).data() };
+    });
+    assert.equal(w.lease.acquired, true); assert.equal(w.lease.holder, 'urzadzenie-P');
+    assert.equal(q.lease.acquired, false); assert.ok(!isNaN(Date.parse(q.lease.expiresAt)));
+    assert.deepEqual(q.dane, { wlasciciel: 'P' });
+    assert.deepEqual(w.glebokie, { o: { a: 1, b: { c: 2, d: 3 } } });
+    assert.equal(w.zlyTyp, 'unsupported_type');
+    assert.equal(w.listaZasobow, true);
+    assert.deepEqual(w.usun, [{ deleted: true }, { deleted: false }]);
     assert.deepEqual(w.x, { n: 3 });
     assert.equal(w.brak, 'not_found');
     assert.equal(w.zla, 'invalid_argument');
@@ -546,6 +917,7 @@ test('(d2) API bazy w trybie serwera + zgodność z danymi na dysku', { timeout:
     await Q.waitForFunction(() => window.__zmiany.length && window.__zmiany[window.__zmiany.length - 1] === 'x=105,b1=0', null, { timeout: 10000 });
     const naDysku = JSON.parse(fs.readFileSync(path.join(dane, 'baza.json'), 'utf8'));
     assert.deepEqual(naDysku.collections.test_s, { x: { n: 105 }, b1: { n: 0 } });
+    assert.deepEqual(naDysku.collections.test_lk, { blokada: { wlasciciel: 'P' } });
     // celowo wywołane 404 (update brakującego dokumentu) przeglądarka zawsze loguje jako błąd zasobu;
     // za duży dokument runtime odrzuca już po stronie przeglądarki, bez wysyłania
     const celowe = /Failed to load resource: the server responded with a status of 404/;

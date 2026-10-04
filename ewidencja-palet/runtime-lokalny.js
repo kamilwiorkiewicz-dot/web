@@ -6,10 +6,17 @@
 
    Tryby:
    • 'server'  — strona otwarta z serwera (node server.js): wspólna baza na serwerze,
-                 zmiany na żywo między urządzeniami (SSE), zapis przez POST.
-   • 'browser' — strona otwarta z dysku (file://) albo z serwera bez API: dane w tej
-                 przeglądarce (IndexedDB → localStorage → tylko pamięć), synchronizacja
-                 między kartami (BroadcastChannel / zdarzenie storage).
+                 zmiany na żywo między urządzeniami (SSE), zapis przez POST. Gdy serwer
+                 nie odpowiada — pasek „Brak połączenia z serwerem — zmiany nie są
+                 zapisywane” i ponowne próby; NIGDY ciche przejście na zapis w przeglądarce.
+   • 'browser' — strona otwarta z dysku (file://) albo ze zwykłego serwera WWW bez API:
+                 dane w tej przeglądarce (IndexedDB → localStorage → tylko pamięć z
+                 ostrzeżeniem), synchronizacja między kartami (BroadcastChannel / storage).
+
+   Semantyka jak baza artefaktu w Claude (umowa runtime 0.2.x): collection/doc/where/orderBy/
+   limit/get/onSnapshot (asynchronicznie, scalane, docChanges)/set/update (rekurencyjne scalanie,
+   {__delete__:true} usuwa pole, brak dokumentu → kod not_found)/delete/add/acquire (dzierżawa);
+   zapis kończy się dopiero po trwałym zapisie (dysk serwera / transakcja IndexedDB).
 
    Czysty JavaScript ES2019 — działa w Safari 14+, Chrome, Firefox, także z file://.
    ========================================================================= */
@@ -35,14 +42,28 @@
   /* narzędzia                                                          */
   /* ------------------------------------------------------------------ */
   function err(code, message) { var e = new Error(message); e.code = code; return e; }
+  // błąd budowania ścieżki: jak na platformie — TypeError rzucany synchronicznie (z kodem dla wygody)
+  function typeErr(message) { var e = new TypeError(message); e.code = 'invalid_argument'; return e; }
   function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
   function isDel(v) { return isObj(v) && v.__delete__ === true && Object.keys(v).length === 1; }
   function defProp(o, k, v) { Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true }); }
-  function stripDel(d) { var o = {}; Object.keys(d).forEach(function (k) { if (!isDel(d[k])) defProp(o, k, d[k]); }); return o; }
+  // usuwa znaczniki {__delete__:true} na każdym poziomie (set zapisuje dokument bez nich)
+  function stripDel(d) {
+    var o = {};
+    Object.keys(d).forEach(function (k) { if (!isDel(d[k])) defProp(o, k, isObj(d[k]) ? stripDel(d[k]) : d[k]); });
+    return o;
+  }
+  // update: zagnieżdżone obiekty scalają się rekurencyjnie (jak na platformie), tablice i reszta
+  // zastępują pole w całości, {__delete__:true} usuwa pole (także zagnieżdżone)
   function merge(base, patch) {
     var o = {};
     Object.keys(base).forEach(function (k) { defProp(o, k, base[k]); });
-    Object.keys(patch).forEach(function (k) { if (isDel(patch[k])) delete o[k]; else defProp(o, k, patch[k]); });
+    Object.keys(patch).forEach(function (k) {
+      var v = patch[k];
+      if (isDel(v)) delete o[k];
+      else if (isObj(v) && isObj(o[k])) defProp(o, k, merge(o[k], v));
+      else defProp(o, k, isObj(v) ? stripDel(v) : v);
+    });
     return o;
   }
   function genId(len) {
@@ -65,7 +86,7 @@
     return allowDelete ? parsed : stripDel(parsed);
   }
   function checkId(kind, v) {
-    if (typeof v !== 'string' || !ID_RE.test(v)) throw err('invalid_argument', 'Nieprawidłowa nazwa ' + kind + ': "' + v + '"');
+    if (typeof v !== 'string' || !ID_RE.test(v) || v === '.' || v === '..') throw typeErr('Nieprawidłowa nazwa ' + kind + ': "' + v + '"');
     return v;
   }
   function onBody(fn) {
@@ -81,8 +102,14 @@
   function showBanner(key, text) {
     onBody(function () {
       if (!bannerBox) {
+        // klasa ep-runtime-banner: aplikacja ukrywa ją w @media print (wydruk WZ/PZ, rozliczenia);
+        // własna reguła druku na wypadek starszej wersji aplikacji bez tej reguły
+        var css = document.createElement('style');
+        css.textContent = '@media print{#ep-local-banners,.ep-runtime-banner{display:none !important;}}';
+        (document.head || document.documentElement).appendChild(css);
         bannerBox = document.createElement('div');
         bannerBox.id = 'ep-local-banners';
+        bannerBox.className = 'ep-runtime-banner';
         bannerBox.setAttribute('style', 'position:fixed;top:calc(env(safe-area-inset-top,0px) + 8px);left:50%;transform:translateX(-50%);' +
           'z-index:2147483000;display:flex;flex-direction:column;gap:6px;align-items:center;width:max-content;max-width:calc(100vw - 24px);pointer-events:none;');
         document.body.appendChild(bannerBox);
@@ -186,7 +213,7 @@
       id: id,
       exists: json !== null,
       ref: new DocRef(coll, id),
-      metadata: {},
+      metadata: { fromCache: false, hasPendingWrites: false },
       data: function () { return json === null ? undefined : JSON.parse(json); },
       get: function (field) { if (json === null) return undefined; var v = getPath(JSON.parse(json), field); return v; },
     };
@@ -197,7 +224,7 @@
       docs: docs,
       size: docs.length,
       empty: docs.length === 0,
-      metadata: {},
+      metadata: { fromCache: false, hasPendingWrites: false },
       forEach: function (cb, thisArg) { docs.forEach(cb, thisArg); },
       docChanges: function () {
         if (!prev) return docs.map(function (d, i) { return { type: 'added', doc: d, oldIndex: -1, newIndex: i }; });
@@ -346,6 +373,20 @@
   DocRef.prototype.onSnapshot = function (next, error) {
     return listen({ coll: this._coll, id: this.id, q: null }, next, error);
   };
+  // Krótka, kooperacyjna dzierżawa dokumentu (jak acquire() na platformie): „zajęte” → {acquired:false},
+  // ten sam holder może ją odnowić, wygasa sama (ttlMs 1–600 s, domyślnie 30 s), brak zwalniania.
+  // data (opcjonalnie) jest scalane z dokumentem przy przyznaniu (tworzy go, gdy go nie ma).
+  DocRef.prototype.acquire = function (options) {
+    var self = this;
+    return ready.then(function () {
+      if (!isObj(options) || typeof options.holder !== 'string' || !options.holder) throw err('invalid_argument', 'acquire(): wymagane {holder: "…"}.');
+      var ttl = Number(options.ttlMs) || 30000;
+      ttl = Math.min(600000, Math.max(1000, ttl));
+      var data = options.data === undefined || options.data === null ? null : toDocJson(options.data, true);
+      var holder = options.holder.slice(0, 200);
+      return enqueueKeys([self._coll + '/' + self.id], function () { return backend.acquire(self._coll, self.id, holder, ttl, data); });
+    });
+  };
   Object.defineProperty(DocRef.prototype, 'parent', { get: function () { return new CollectionRef(this._coll); } });
 
   // Paczka zapisów (atomowo: wszystkie albo żaden) — db.batch().set(ref, data).update(...).delete(ref).commit()
@@ -382,9 +423,12 @@
   function enqueueWrite(writes) {
     var keys = [];
     writes.forEach(function (w) { var k = w.coll + '/' + w.id; if (keys.indexOf(k) < 0) keys.push(k); });
+    return enqueueKeys(keys, function () { return backend.write(writes); });
+  }
+  function enqueueKeys(keys, fn) {
     var before = [];
     keys.forEach(function (k) { if (keyChains.has(k)) before.push(keyChains.get(k)); });
-    var p = Promise.all(before).then(function () { return backend.write(writes); });
+    var p = Promise.all(before).then(fn);
     var settled = p.then(noop, noop);
     keys.forEach(function (k) { keyChains.set(k, settled); });
     settled.then(function () { keys.forEach(function (k) { if (keyChains.get(k) === settled) keyChains.delete(k); }); });
@@ -401,7 +445,8 @@
       else if (w.op === 'update') {
         if (!cur) throw err('not_found', 'Dokument ' + key + ' nie istnieje.');
         next = merge(cur, w.data);
-      } else next = null;
+      } else if (w.op === 'merge') next = merge(cur || {}, w.data); // wewnętrzne: dane z acquire()
+      else next = null;
       overlay.set(key, next);
       out.push({ coll: w.coll, id: w.id, data: next, json: next === null ? null : JSON.stringify(next) });
     });
@@ -417,12 +462,14 @@
     if (!t && blob.name) { var m = /\.([a-z0-9]+)$/i.exec(blob.name); if (m) t = EXT_MIME[m[1].toLowerCase()] || ''; }
     return t;
   }
-  function checkUpload(blob) {
-    if (!blob || typeof blob.size !== 'number' || typeof blob.slice !== 'function') throw err('invalid_argument', 'Oczekiwano pliku (Blob).');
-    var type = blobType(blob);
-    if (!/^image\/[a-z0-9.+-]+$/.test(type)) throw err('invalid_argument', 'Dozwolone są tylko obrazy (PNG, JPG, WEBP, SVG…).');
-    if (blob.size > MAX_ASSET_BYTES) throw err('invalid_argument', 'Plik jest za duży (maks. 4 MB).');
-    if (blob.size === 0) throw err('invalid_argument', 'Plik jest pusty.');
+  // kody błędów jak w umowie platformy (assets): invalid_request / unsupported_type / too_large
+  function checkUpload(blob, options) {
+    if (!blob || typeof blob.size !== 'number' || typeof blob.slice !== 'function') throw err('invalid_request', 'Oczekiwano pliku (Blob).');
+    if (options !== undefined && options !== null && !isObj(options)) throw err('invalid_request', 'Nieprawidłowe opcje wysyłania.');
+    var type = options && typeof options.type === 'string' && options.type ? options.type.toLowerCase() : blobType(blob);
+    if (!/^image\/[a-z0-9.+-]+$/.test(type)) throw err('unsupported_type', 'Dozwolone są tylko obrazy (PNG, JPG, WEBP, SVG…).');
+    if (blob.size === 0) throw err('invalid_request', 'Plik jest pusty.');
+    if (blob.size > MAX_ASSET_BYTES) throw err('too_large', 'Plik jest za duży (maks. 4 MB).');
     return type;
   }
   function readDataUrl(blob, type) {
@@ -436,36 +483,57 @@
       r.readAsDataURL(blob);
     });
   }
+  var ASSET_LIMITS = { maxFiles: 1000, maxBytes: 500 * 1024 * 1024 };
+  function usageOf(list) {
+    var bytes = 0; list.forEach(function (a) { bytes += a.sizeBytes || 0; });
+    return { files: list.length, bytes: bytes, maxFiles: ASSET_LIMITS.maxFiles, maxBytes: ASSET_LIMITS.maxBytes };
+  }
+  function isoTime(ms) { return new Date(Number(ms) || 0).toISOString(); }
+  // delete(ref): identyfikator albo adres dokładnie taki, jaki zwróciły upload()/list()
+  function assetIdFromRef(ref) {
+    if (typeof ref !== 'string' || !ref) throw err('invalid_request', 'Oczekiwano identyfikatora logo.');
+    var found = null;
+    if (backend && backend.assets) backend.assets.forEach(function (a, id) { if (!found && (id === ref || (a.url && a.url === ref) || (a.dataUrl && a.dataUrl === ref))) found = id; });
+    if (found) return found;
+    var m = /\/_blob\/([^\/?#]+)$/.exec(ref);
+    return m ? decodeURIComponent(m[1]) : ref;
+  }
   var assetsApi = {
-    upload: function (blob) { return ready.then(function () { var type = checkUpload(blob); return backend.uploadAsset(blob, type); }); },
-    list: function () { return ready.then(function () { return backend.listAssets(); }); },
-    delete: function (id) { return ready.then(function () { return backend.deleteAsset(String(id)); }).then(noop); },
+    upload: function (blob, options) { return ready.then(function () { var type = checkUpload(blob, options); return backend.uploadAsset(blob, type); }); },
+    list: function () {
+      return ready.then(function () { return backend.listAssets(); }).then(function (list) { return { assets: list, usage: usageOf(list) }; });
+    },
+    delete: function (ref) {
+      return ready.then(function () { return backend.deleteAsset(assetIdFromRef(ref)); }).then(function (d) { return { deleted: !!d }; });
+    },
   };
 
-  function mimeFor(name, isText) {
+  function mimeFor(name, isText, fallback) {
     var ext = (/\.([a-z0-9]+)$/i.exec(name || '') || [])[1];
     ext = ext ? ext.toLowerCase() : '';
-    var map = { csv: 'text/csv', json: 'application/json', txt: 'text/plain', html: 'text/html', xml: 'application/xml', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', pdf: 'application/pdf', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
-    var t = map[ext] || (isText ? 'text/plain' : 'application/octet-stream');
+    var map = { csv: 'text/csv', json: 'application/json', txt: 'text/plain', md: 'text/markdown', html: 'text/html', xml: 'application/xml', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf', zip: 'application/zip', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+    var t = map[ext] || fallback || (isText ? 'text/plain' : 'application/octet-stream');
     return isText && /^(text\/|application\/(json|xml))/.test(t) ? t + ';charset=utf-8' : t;
   }
+  // save({filename, data}) → {status:'saved'}; typ pliku wynika z rozszerzenia (jak na platformie)
   var downloadsApi = {
     save: function (opts) {
       return new Promise(function (resolve, reject) {
-        if (!opts || typeof opts.filename !== 'string' || !opts.filename.trim()) { reject(err('invalid_argument', 'Brak nazwy pliku.')); return; }
-        var name = opts.filename.replace(/[\/\\?%*:|"<>\u0000-\u001f]/g, '_').trim();
-        var data = opts.data, type = opts.mimeType || opts.contentType, blob;
-        if (typeof Blob !== 'undefined' && data instanceof Blob) blob = type ? new Blob([data], { type: type }) : data;
-        else if (typeof data === 'string') blob = new Blob([data], { type: type || mimeFor(name, true) });
-        else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) blob = new Blob([data], { type: type || mimeFor(name, false) });
-        else { reject(err('invalid_argument', 'Nieobsługiwany typ danych pliku.')); return; }
+        if (!opts || typeof opts.filename !== 'string' || !opts.filename.trim() || opts.filename.length > 512) { reject(err('bad_request', 'Brak albo nieprawidłowa nazwa pliku.')); return; }
+        var name = opts.filename.replace(/[\/\\?%*:|"<>\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim();
+        var data = opts.data, blob;
+        if (typeof Blob !== 'undefined' && data instanceof Blob) blob = new Blob([data], { type: mimeFor(name, false, data.type) });
+        else if (typeof data === 'string') blob = new Blob([data], { type: mimeFor(name, true) });
+        else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) blob = new Blob([data], { type: mimeFor(name, false) });
+        else { reject(err('bad_request', 'Nieobsługiwany typ danych pliku.')); return; }
+        if (!blob.size) { reject(err('bad_request', 'Plik jest pusty.')); return; }
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url; a.download = name; a.rel = 'noopener'; a.style.display = 'none';
         (document.body || document.documentElement).appendChild(a);
         a.click();
         setTimeout(function () { URL.revokeObjectURL(url); if (a.parentNode) a.parentNode.removeChild(a); }, 60000);
-        resolve();
+        resolve({ status: 'saved' });
       });
     },
   };
@@ -473,6 +541,7 @@
   /* ------------------------------------------------------------------ */
   /* TRYB SERWERA                                                       */
   /* ------------------------------------------------------------------ */
+  // e.network = brak odpowiedzi HTTP (serwer wyłączony, sieć, przekroczony czas); e.auth = serwer chce hasła
   function fetchJson(url, opts, timeoutMs) {
     opts = opts || {};
     var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -480,7 +549,10 @@
     var init = { method: opts.method || 'GET', headers: opts.headers || {}, body: opts.body, cache: 'no-store', credentials: 'same-origin' };
     if (ctrl) init.signal = ctrl.signal;
     var timeout = new Promise(function (_, reject) {
-      timer = setTimeout(function () { if (ctrl) ctrl.abort(); reject(err('unavailable', 'Serwer nie odpowiada.')); }, timeoutMs || WRITE_TIMEOUT_MS);
+      timer = setTimeout(function () {
+        if (ctrl) ctrl.abort();
+        var e = err('unavailable', 'Serwer nie odpowiada.'); e.network = true; reject(e);
+      }, timeoutMs || WRITE_TIMEOUT_MS);
     });
     var req = fetch(url, init).then(function (r) {
       return r.text().then(function (t) {
@@ -489,42 +561,64 @@
         var code = body && body.error;
         var msg = (body && body.message) || ('HTTP ' + r.status);
         if (r.status === 404 && code === 'not_found') throw err('not_found', msg);
-        if (r.status === 400 || r.status === 413 || r.status === 415) throw err('invalid_argument', msg);
+        if (r.status === 413) throw err(opts.asset ? 'too_large' : 'invalid_argument', msg);
+        if (r.status === 415) throw err(opts.asset ? 'unsupported_type' : 'invalid_argument', msg);
+        if (r.status === 400) throw err(opts.asset ? 'invalid_request' : 'invalid_argument', msg);
         if (r.status === 507 || code === 'quota_exceeded') throw err('quota_exceeded', msg);
-        if (r.status === 401) throw err('unavailable', 'Wymagane hasło — odśwież stronę i zaloguj się ponownie.');
+        if (r.status === 401) { var a = err('unavailable', 'Serwer wymaga hasła — odśwież stronę, aby się zalogować.'); a.auth = true; throw a; }
+        if (r.status === 502 || r.status === 503 || r.status === 504) { var g = err('unavailable', 'Serwer nie odpowiada (' + r.status + ').'); g.network = true; throw g; }
         throw err('unavailable', msg);
       });
     }).then(null, function (e) {
       if (e && typeof e.code === 'string') throw e;
-      throw err('unavailable', 'Brak połączenia z serwerem.'); // sieć, przerwane połączenie, przekroczony czas
+      var n = err('unavailable', 'Brak połączenia z serwerem.'); n.network = true; throw n; // sieć, przerwane połączenie
     });
     return Promise.race([req, timeout]).then(function (v) { clearTimeout(timer); return v; }, function (e) { clearTimeout(timer); throw e; });
   }
 
+  // 'server'      — odpowiada serwer Ewidencji Palet
+  // 'unreachable' — strona jest z adresu http(s), ale serwer nie odpowiada (wyłączony, uśpiony, brama 502–504)
+  // 'auth'        — serwer Ewidencji Palet wymaga hasła (strona wczytana z pamięci podręcznej przeglądarki)
+  // 'none'        — plik z dysku albo zwykły serwer WWW bez API (404 itp.) → tryb przeglądarki
   function pingServer() {
     if (!/^https?:$/.test(window.location.protocol) || typeof fetch !== 'function') return Promise.resolve('none');
     function once() {
-      return fetchJson(API + 'ping', { headers: { Accept: 'application/json' } }, PING_TIMEOUT_MS).then(function (j) {
-        return j && j.app === APP ? 'server' : 'none';
-      }, function (e) { return e.code === 'unavailable' && !/HTTP \d/.test(e.message) ? 'unreachable' : 'none'; });
+      var ctrl = typeof AbortController === 'function' ? new AbortController() : null, timer = null;
+      var init = { headers: { Accept: 'application/json' }, cache: 'no-store', credentials: 'same-origin' };
+      if (ctrl) init.signal = ctrl.signal;
+      var timeout = new Promise(function (resolve) { timer = setTimeout(function () { if (ctrl) ctrl.abort(); resolve('unreachable'); }, PING_TIMEOUT_MS); });
+      var req = fetch(API + 'ping', init).then(function (r) {
+        if (r.status === 401 && /Ewidencja Palet/.test(r.headers.get('WWW-Authenticate') || '')) return 'auth';
+        if (r.status === 502 || r.status === 503 || r.status === 504) return 'unreachable';
+        if (!r.ok) return 'none';
+        return r.text().then(function (t) { var j = null; try { j = JSON.parse(t); } catch (e) { j = null; } return j && j.app === APP ? 'server' : 'none'; });
+      }, function () { return 'unreachable'; });
+      return Promise.race([req, timeout]).then(function (v) { clearTimeout(timer); return v; });
     }
     // jeden ponowny strzał przy braku odpowiedzi (np. NAS wybudzający się) — 404 itp. rozstrzyga od razu
     return once().then(function (r) { return r === 'unreachable' ? once() : r; });
   }
 
+  // karta ukryta dłużej niż minutę → rozłącz SSE: przeglądarka trzyma najwyżej 6 połączeń HTTP/1.1 z jednym
+  // serwerem, a każda otwarta karta zajmuje jedno na stałe (7. karta by „wisiała”); po powrocie — wczytanie od nowa
+  var OPCJE = window.EP_LOCAL_OPCJE || {}; // tylko do testów
+  var HIDDEN_PAUSE_MS = Number(OPCJE.pauzaUkrytejKartyMs) > 0 ? Number(OPCJE.pauzaUkrytejKartyMs) : 60000;
   function ServerBackend() {
     this.kind = 'server';
     this.clientId = genId(16);
+    this.serverId = null;        // zmienia się przy każdym starcie serwera
     this.snapRev = 0;
     this.docRev = new Map();     // 'coll/id' -> rev ostatnio zastosowanej zmiany
     this.es = null;
     this.everConnected = false;
     this.online = false;
+    this.paused = false;
     this.buffer = null;          // zdarzenia odebrane w trakcie ponownego wczytywania
     this.lastSeen = 0;
     this.retry = 0;
     this.reconnectTimer = null;
     this.offlineTimer = null;
+    this.hideTimer = null;
     this.assets = new Map();
   }
   ServerBackend.prototype.init = function () {
@@ -536,18 +630,27 @@
           self.connect();
           self.startWatchdog();
           resolve();
-        }, function () {
+        }, function (e) {
+          // nigdy nie przechodzimy po cichu na zapis w przeglądarce: dane rozjechałyby się z serwerem
           attempt++;
-          self.setOnline(false, true);
+          self.setOnline(false, true, e && e.auth);
           setTimeout(tryLoad, Math.min(10000, 1000 * Math.pow(2, Math.min(attempt, 4))));
         });
       })();
     });
   };
+  // nowy serverId = serwer uruchomiony od nowa (być może z danymi odtworzonymi z kopii, z niższym rev):
+  // zapomnij wszystko, co wiadomo o numerach zmian, i przyjmij stan serwera w całości
+  ServerBackend.prototype.noteServer = function (serverId) {
+    if (!serverId) return;
+    if (this.serverId && serverId !== this.serverId) { this.docRev.clear(); this.snapRev = -1; }
+    this.serverId = serverId;
+  };
   ServerBackend.prototype.loadSnapshot = function () {
     var self = this;
     return fetchJson(API + 'snapshot', {}, 20000).then(function (snap) {
       if (!snap || !isObj(snap.collections)) throw err('unavailable', 'Nieprawidłowa odpowiedź serwera.');
+      self.noteServer(snap.serverId);
       var next = new Map();
       Object.keys(snap.collections).forEach(function (c) {
         var docs = snap.collections[c], m = new Map();
@@ -573,7 +676,8 @@
   ServerBackend.prototype.connect = function () {
     var self = this;
     clearTimeout(this.reconnectTimer);
-    if (this.es) { this.es.onerror = null; this.es.close(); }
+    if (this.es) { this.es.onerror = null; this.es.close(); this.es = null; }
+    if (this.paused) return;
     if (typeof EventSource !== 'function') { warn('Brak EventSource — zmiany z innych urządzeń pojawią się po odświeżeniu.'); this.setOnline(true); return; }
     var es = this.es = new EventSource(API + 'events');
     this.lastSeen = Date.now();
@@ -583,6 +687,7 @@
       var h = {}; try { h = JSON.parse(e.data); } catch (x) { /* ignore */ }
       var reconnect = self.everConnected;
       self.everConnected = true; self.retry = 0;
+      self.noteServer(h.serverId);
       if (reconnect || Number(h.rev) !== self.snapRev) self.resync();
       else self.setOnline(true);
     });
@@ -602,6 +707,7 @@
   ServerBackend.prototype.scheduleReconnect = function () {
     var self = this;
     clearTimeout(this.reconnectTimer);
+    if (this.paused) return;
     this.retry++;
     this.reconnectTimer = setTimeout(function () { self.connect(); }, Math.min(10000, 500 * Math.pow(2, Math.min(this.retry, 5))));
   };
@@ -614,39 +720,71 @@
       buf.forEach(function (ev) { self.applyEvent(ev); });
       touchAll(); // ponowne dostarczenie wszystkim nasłuchom
       self.setOnline(true);
-    }, function () {
+    }, function (e) {
       self.buffer = null;
-      self.setOnline(false);
+      self.setOnline(false, false, e && e.auth);
       if (self.es) { self.es.onerror = null; self.es.close(); self.es = null; }
       self.scheduleReconnect();
     });
   };
+  // ukryta karta po minucie zwalnia połączenie SSE; po powrocie łączy się i wczytuje stan od nowa
+  ServerBackend.prototype.pause = function () {
+    if (this.paused) return;
+    this.paused = true;
+    clearTimeout(this.reconnectTimer);
+    if (this.es) { this.es.onerror = null; this.es.close(); this.es = null; }
+  };
+  ServerBackend.prototype.resume = function () {
+    if (!this.paused) return;
+    this.paused = false; this.retry = 0; this.everConnected = true;
+    this.connect();
+  };
   ServerBackend.prototype.startWatchdog = function () {
     var self = this;
     setInterval(function () {
-      if (self.es && Date.now() - self.lastSeen > SSE_SILENCE_MS) { self.setOnline(false); self.connect(); }
+      if (self.es && !self.paused && Date.now() - self.lastSeen > SSE_SILENCE_MS) { self.setOnline(false); self.connect(); }
     }, 10000);
-    var kick = function () { if (!self.online) { self.retry = 0; self.connect(); } };
+    var kick = function () { if (!self.online && !self.paused) { self.retry = 0; self.connect(); } };
     window.addEventListener('online', kick);
-    window.addEventListener('pageshow', function (e) { if (e.persisted) { self.everConnected = true; self.connect(); } });
-    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') kick(); });
+    window.addEventListener('pageshow', function (e) { if (e.persisted) { self.everConnected = true; self.paused = false; self.connect(); } });
+    document.addEventListener('visibilitychange', function () {
+      clearTimeout(self.hideTimer);
+      if (document.visibilityState === 'hidden') {
+        self.hideTimer = setTimeout(function () { if (document.visibilityState === 'hidden') self.pause(); }, HIDDEN_PAUSE_MS);
+      } else if (self.paused) self.resume();
+      else kick();
+    });
   };
-  ServerBackend.prototype.setOnline = function (on, immediate) {
+  ServerBackend.prototype.setOnline = function (on, immediate, auth) {
     var self = this;
     this.online = on;
     if (window.EP_LOCAL) window.EP_LOCAL.online = on;
     clearTimeout(this.offlineTimer);
     if (on) { hideBanner('offline'); return; }
-    var show = function () { if (!self.online) showBanner('offline', 'Brak połączenia z serwerem — zmiany nie są zapisywane'); };
+    var text = auth ? 'Serwer wymaga hasła — odśwież stronę, aby się zalogować. Zmiany nie są zapisywane'
+      : 'Brak połączenia z serwerem — zmiany nie są zapisywane';
+    var show = function () { if (!self.online) showBanner('offline', text); };
     if (immediate) show(); else this.offlineTimer = setTimeout(show, 1000); // bez migania przy krótkiej przerwie
   };
   ServerBackend.prototype.post = function (path, body) {
     var self = this;
     return fetchJson(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, WRITE_TIMEOUT_MS)
-      .then(null, function (e) {
-        if (e.code === 'unavailable') { self.setOnline(false, true); if (!self.es || self.es.readyState === 2) self.scheduleReconnect(); }
-        throw e;
-      });
+      .then(null, function (e) { self.onRequestError(e); throw e; });
+  };
+  // tylko brak odpowiedzi (albo żądanie hasła) oznacza utratę połączenia — błąd zapisu na dysku serwera nie
+  ServerBackend.prototype.onRequestError = function (e) {
+    if (!e || !(e.network || e.auth)) return;
+    this.setOnline(false, true, e.auth);
+    if (!this.paused && (!this.es || this.es.readyState === 2)) this.scheduleReconnect();
+  };
+  ServerBackend.prototype.applyResult = function (r) {
+    var key = r.coll + '/' + r.id;
+    if (r.rev !== null && r.rev !== undefined) {
+      var known = this.docRev.get(key);
+      if (known !== undefined && known > r.rev) { touch(r.coll, r.id); return; } // nowsza zmiana już dotarła
+      this.docRev.set(key, r.rev);
+    }
+    applyChange(r.coll, r.id, r.data === null || r.data === undefined ? null : JSON.stringify(r.data), true);
   };
   ServerBackend.prototype.write = function (writes) {
     var self = this;
@@ -658,39 +796,52 @@
       var results = single
         ? [{ coll: writes[0].coll, id: writes[0].id, rev: res.changed === false ? null : res.rev, data: res.data }]
         : (res.results || []);
-      results.forEach(function (r) {
-        var key = r.coll + '/' + r.id;
-        if (r.rev !== null && r.rev !== undefined) {
-          var known = self.docRev.get(key);
-          if (known !== undefined && known > r.rev) { touch(r.coll, r.id); return; } // nowsza zmiana już dotarła
-          self.docRev.set(key, r.rev);
-        }
-        applyChange(r.coll, r.id, r.data === null || r.data === undefined ? null : JSON.stringify(r.data), true);
-      });
+      results.forEach(function (r) { self.applyResult(r); });
       if (!single) writes.forEach(function (w) { touch(w.coll, w.id); });
       return results;
     });
   };
+  ServerBackend.prototype.acquire = function (coll, id, holder, ttl, data) {
+    var self = this;
+    return this.post('acquire', { coll: coll, id: id, holder: holder, ttlMs: ttl, data: data, clientId: this.clientId }).then(function (res) {
+      if (res.acquired && res.change) self.applyResult(res.change);
+      return leaseResult(res.acquired, res.version, res.expiresAt, holder);
+    });
+  };
   ServerBackend.prototype.assetUrl = function (id) { return BASE + '_blob/' + encodeURIComponent(id); };
+  ServerBackend.prototype.assetOut = function (a) {
+    return { id: a.id, url: this.assetUrl(a.id), contentType: a.contentType, sizeBytes: a.sizeBytes, createdAt: isoTime(a.createdAt) };
+  };
   ServerBackend.prototype.uploadAsset = function (blob, type) {
     var self = this;
-    return fetchJson(API + 'assets', { method: 'POST', headers: { 'Content-Type': type }, body: blob }, WRITE_TIMEOUT_MS).then(function (res) {
-      var a = { id: res.id, url: self.assetUrl(res.id), sizeBytes: res.sizeBytes, contentType: res.contentType };
+    return fetchJson(API + 'assets', { method: 'POST', headers: { 'Content-Type': type }, body: blob, asset: true }, WRITE_TIMEOUT_MS).then(function (res) {
+      var a = { id: res.id, contentType: res.contentType, sizeBytes: res.sizeBytes, createdAt: res.createdAt };
       self.assets.set(a.id, a);
-      return a;
-    }, function (e) { if (e.code === 'unavailable') self.setOnline(false, true); throw e; });
+      var out = self.assetOut(a); delete out.createdAt;
+      return out;
+    }, function (e) { self.onRequestError(e); throw e; });
   };
   ServerBackend.prototype.listAssets = function () {
     var self = this;
     return fetchJson(API + 'assets', {}, 20000).then(function (res) {
-      var list = (res.assets || []).map(function (a) { return { id: a.id, url: self.assetUrl(a.id), sizeBytes: a.sizeBytes, contentType: a.contentType }; });
-      return { assets: list, usage: { bytes: (res.usage && res.usage.bytes) || 0 } };
-    });
+      return (res.assets || []).map(function (a) { return self.assetOut(a); });
+    }, function (e) { self.onRequestError(e); throw e; });
   };
   ServerBackend.prototype.deleteAsset = function (id) {
     var self = this;
-    return fetchJson(API + 'assets/' + encodeURIComponent(id), { method: 'DELETE' }, WRITE_TIMEOUT_MS).then(function () { self.assets.delete(id); });
+    return fetchJson(API + 'assets/' + encodeURIComponent(id), { method: 'DELETE', asset: true }, WRITE_TIMEOUT_MS).then(function (res) {
+      self.assets.delete(id);
+      return !!(res && res.existed);
+    }, function (e) { self.onRequestError(e); throw e; });
   };
+
+  // wynik acquire() w kształcie platformy: {acquired, version?, expiresAt, holder?}
+  function leaseResult(acquired, version, expiresAt, holder) {
+    var out = { acquired: !!acquired };
+    if (acquired) { out.version = version; out.expiresAt = expiresAt; out.holder = holder; }
+    else if (expiresAt) out.expiresAt = expiresAt;
+    return out;
+  }
 
   /* ------------------------------------------------------------------ */
   /* TRYB PRZEGLĄDARKI                                                  */
@@ -798,15 +949,16 @@
           if (w.op === 'set') put(w, w.data);
           else if (w.op === 'delete') put(w, null);
           else if (overlay.has(key)) {
-            if (!overlay.get(key)) { abortErr = err('not_found', 'Dokument ' + key + ' nie istnieje.'); tx.abort(); return; }
-            put(w, merge(overlay.get(key), w.data));
+            // update wymaga istniejącego dokumentu; wewnętrzne 'merge' (acquire z data) tworzy go
+            if (!overlay.get(key) && w.op === 'update') { abortErr = err('not_found', 'Dokument ' + key + ' nie istnieje.'); tx.abort(); return; }
+            put(w, merge(overlay.get(key) || {}, w.data));
           } else {
             var r = st.get(key);
             r.onsuccess = (function (w2, i2) {
               return function (e) {
-                var rec = e.target.result;
-                if (!rec || !isObj(rec.data)) { abortErr = err('not_found', 'Dokument ' + w2.coll + '/' + w2.id + ' nie istnieje.'); try { tx.abort(); } catch (x) { /* ignore */ } return; }
-                put(w2, merge(rec.data, w2.data));
+                var rec = e.target.result, base = rec && isObj(rec.data) ? rec.data : null;
+                if (!base && w2.op === 'update') { abortErr = err('not_found', 'Dokument ' + w2.coll + '/' + w2.id + ' nie istnieje.'); try { tx.abort(); } catch (x) { /* ignore */ } return; }
+                put(w2, merge(base || {}, w2.data));
                 step(i2 + 1);
               };
             })(w, i);
@@ -845,6 +997,23 @@
         resolve();
       };
       tx.onabort = function () { resolve(); };
+    });
+  };
+  // dzierżawa (acquire): rekord '#lease:coll/id' w tym samym magazynie — transakcja readwrite IndexedDB
+  // jest atomowa także między kartami. '#' nie występuje w nazwach kolekcji, a load() pomija te rekordy.
+  IdbBackend.prototype.lease = function (key, holder, ttl) {
+    var db = this.db;
+    return new Promise(function (resolve, reject) {
+      var tx, out = null;
+      try { tx = rwTx(db, ['docs']); } catch (e) { reject(idbErr(e)); return; }
+      var st = tx.objectStore('docs'), k = '#lease:' + key;
+      st.get(k).onsuccess = function (e) {
+        var d = decideLease(e.target.result, holder, ttl, Date.now());
+        if (d.rec) st.put(d.rec, k);
+        out = d.res;
+      };
+      tx.oncomplete = function () { resolve(out); };
+      tx.onabort = function () { reject(idbErr(tx.error)); };
     });
   };
   IdbBackend.prototype.putAsset = function (rec) {
@@ -909,7 +1078,20 @@
     }
   };
 
-  function MemBackend() { this.kind = 'memory'; this.assets = new Map(); }
+  LsBackend.prototype.lease = function (key, holder, ttl) {
+    var k = LSP + 'l:' + key, cur = null;
+    try { cur = JSON.parse(window.localStorage.getItem(k)); } catch (e) { cur = null; }
+    var d = decideLease(cur, holder, ttl, Date.now());
+    if (d.rec) { try { window.localStorage.setItem(k, JSON.stringify(d.rec)); } catch (e) { return Promise.reject(err('unavailable', 'Nie udało się zapisać dzierżawy: ' + e.message)); } }
+    return Promise.resolve(d.res);
+  };
+
+  function MemBackend() { this.kind = 'memory'; this.assets = new Map(); this.leases = new Map(); }
+  MemBackend.prototype.lease = function (key, holder, ttl) {
+    var d = decideLease(this.leases.get(key), holder, ttl, Date.now());
+    if (d.rec) this.leases.set(key, d.rec);
+    return Promise.resolve(d.res);
+  };
   MemBackend.prototype.load = function () { return Promise.resolve(); };
   MemBackend.prototype.write = function (writes) {
     return new Promise(function (resolve) {
@@ -920,8 +1102,23 @@
   };
   MemBackend.prototype.putAsset = function () { return Promise.resolve(); };
 
+  // zajęta przez innego posiadacza i jeszcze ważna → odmowa; wolna, wygasła albo nasza → przyznana (odnowiona)
+  function decideLease(cur, holder, ttl, now) {
+    if (cur && cur.holder !== holder && Number(cur.exp) > now) return { rec: null, res: leaseResult(false, null, isoTime(cur.exp)) };
+    var ver = ((cur && Number(cur.ver)) || 0) + 1, exp = now + ttl;
+    return { rec: { lease: true, holder: holder, exp: exp, ver: ver }, res: leaseResult(true, ver, isoTime(exp), holder) };
+  }
+
   // wspólne dla trybów przeglądarki: loga jako data URL w pamięci podręcznej (assetUrl musi być synchroniczne)
   [IdbBackend, LsBackend, MemBackend].forEach(function (B) {
+    // wywoływane już w kolejce zapisów tego dokumentu (enqueueKeys) — dlatego write(), nie enqueueWrite()
+    B.prototype.acquire = function (coll, id, holder, ttl, data) {
+      var self = this;
+      return this.lease(coll + '/' + id, holder, ttl).then(function (res) {
+        if (!res.acquired || !data) return res;
+        return self.write([{ op: 'merge', coll: coll, id: id, data: data }]).then(function () { return res; });
+      });
+    };
     B.prototype.assetUrl = function (id) {
       // null dla nieznanego logo: aplikacja pobiera loga przez fetch(assetSrc(id)) do kopii zapasowej,
       // więc nie wolno podsuwać „zastępczego” obrazka — trafiłby do kopii jako prawdziwe logo
@@ -932,7 +1129,7 @@
       var self = this;
       return readDataUrl(blob, type).then(function (dataUrl) {
         var id; do { id = genId(20); } while (self.assets.has(id));
-        var rec = { id: id, dataUrl: dataUrl, contentType: type, sizeBytes: blob.size };
+        var rec = { id: id, dataUrl: dataUrl, contentType: type, sizeBytes: blob.size, createdAt: Date.now() };
         return self.putAsset(rec).then(function () {
           self.assets.set(id, rec);
           if (self.kind === 'indexeddb') broadcast({ t: 'assets', assets: [id] });
@@ -941,16 +1138,18 @@
       });
     };
     B.prototype.listAssets = function () {
-      var list = [], bytes = 0;
-      this.assets.forEach(function (a) { list.push({ id: a.id, url: a.dataUrl, sizeBytes: a.sizeBytes, contentType: a.contentType }); bytes += a.sizeBytes || 0; });
-      return Promise.resolve({ assets: list, usage: { bytes: bytes } });
+      var list = [];
+      this.assets.forEach(function (a) { list.push({ id: a.id, url: a.dataUrl, contentType: a.contentType, sizeBytes: a.sizeBytes, createdAt: isoTime(a.createdAt) }); });
+      list.sort(function (a, b) { return a.createdAt < b.createdAt ? -1 : (a.createdAt > b.createdAt ? 1 : 0); }); // najstarsze najpierw
+      return Promise.resolve(list);
     };
     B.prototype.deleteAsset = function (id) {
       var self = this;
-      if (!this.assets.has(id)) return Promise.resolve();
+      if (!this.assets.has(id)) return Promise.resolve(false);
       return this.putAsset({ id: id, dataUrl: null }).then(function () {
         self.assets.delete(id);
         if (self.kind === 'indexeddb') broadcast({ t: 'assets', assets: [id] });
+        return true;
       });
     };
   });
@@ -972,7 +1171,7 @@
     } catch (x) { warn('synchronizacja kart (localStorage):', x); }
   });
 
-  function initBrowser(serverUnreachable) {
+  function initBrowser() {
     var isFirefox = /firefox/i.test(navigator.userAgent || '');
     function persist() { try { if (!isFirefox && navigator.storage && navigator.storage.persist) navigator.storage.persist().then(noop, noop); } catch (e) { /* ignore */ } }
     function useMemory(reason) {
@@ -993,8 +1192,6 @@
     }).then(null, function (e) {
       warn('IndexedDB niedostępne (' + (e && e.message) + ') — używam localStorage.');
       return useLs();
-    }).then(function () {
-      if (serverUnreachable) showBanner('tryb', 'Serwer nie odpowiada — dane zapisywane tylko w tej przeglądarce. Odśwież stronę, gdy serwer będzie dostępny.');
     });
   }
 
@@ -1022,9 +1219,21 @@
     ready: null,
   };
 
+  // diagnostyka: stan połączenia na żywo z serwerem ('otwarte' | 'wstrzymane' | 'brak'), null w trybie przeglądarki
+  Object.defineProperty(EP, 'polaczenie', { enumerable: true, get: function () {
+    if (!backend || backend.kind !== 'server') return null;
+    return backend.paused ? 'wstrzymane' : (backend.es && backend.es.readyState === 1 ? 'otwarte' : 'brak');
+  } });
+
   var ready = pingServer().then(function (r) {
-    if (r === 'server') { var b = new ServerBackend(); backend = b; return b.init(); }
-    return initBrowser(r === 'unreachable');
+    // strona z adresu serwera, który chwilowo nie odpowiada (albo chce hasła), zostaje w trybie serwera
+    // i czeka na niego z paskiem „Brak połączenia…” — nigdy nie zapisuje po cichu w przeglądarce
+    if (r !== 'none') {
+      var b = new ServerBackend(); backend = b;
+      EP.mode = 'server'; EP.storage = 'server'; EP.online = false; EP.label = 'Tryb serwera — łączenie z serwerem…';
+      return b.init();
+    }
+    return initBrowser();
   }).then(function () {
     EP.mode = backend.kind === 'server' ? 'server' : 'browser';
     EP.storage = backend.kind;
@@ -1036,14 +1245,17 @@
   EP.ready = ready;
 
   window.EP_LOCAL = EP;
+  // jak na platformie: przestrzenie nazw są zamrożone, use() tej samej nazwy daje tę samą obietnicę,
+  // nieznana nazwa → null
+  var NAMESPACES = { db: Object.freeze(dbApi), assets: Object.freeze(assetsApi), downloads: Object.freeze(downloadsApi) };
+  var uses = {};
   window.claude = {
     use: function (name) {
-      return ready.then(function () {
-        if (name === 'db') return dbApi;
-        if (name === 'assets') return assetsApi;
-        if (name === 'downloads') return downloadsApi;
-        return null;
-      });
+      var known = Object.prototype.hasOwnProperty.call(NAMESPACES, name);
+      if (known && uses[name]) return uses[name];
+      var p = ready.then(function () { return known ? NAMESPACES[name] : null; }, function () { return null; });
+      if (known) uses[name] = p;
+      return p;
     },
   };
 })(window, document);

@@ -11,10 +11,10 @@
   :root{
     box-sizing:border-box;
     --bg:#F4F6F8; --panel:#FFFFFF; --panel-2:#F0F2F5; --border:#DDE2E7;
-    --text:#12161B; --text-dim:#5B6670; --text-faint:#8B96A0;
+    --text:#12161B; --text-dim:#5B6670; --text-faint:#6B7680;
     --accent:#0891A8; --accent-strong:#046B7F; --accent-bg:#DFF4F8;
-    --good:#1E8A55; --good-bg:#E1F5EA;
-    --bad:#C2570A; --bad-bg:#FBE6D2;
+    --good:#17734A; --good-bg:#E1F5EA;
+    --bad:#A84A06; --bad-bg:#FBE6D2;
     --info:#5B4FE0; --info-bg:#EAE7FC;
     --glow-1: rgba(8,145,168,0.08); --glow-2: rgba(214,36,122,0.06);
     --shadow: 0 1px 2px rgba(15,20,25,.05), 0 8px 20px rgba(15,20,25,.06);
@@ -25,7 +25,7 @@
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#080B0E; --panel:rgba(16,21,26,.78); --panel-2:rgba(20,26,32,.72); --border:#212930;
-      --text:#E8F1F5; --text-dim:#8FA1AB; --text-faint:#5A6B75;
+      --text:#E8F1F5; --text-dim:#8FA1AB; --text-faint:#7D8F99;
       --accent:#2BE8FF; --accent-strong:#7BF4FF; --accent-bg:rgba(43,232,255,0.12);
       --good:#39FF8A; --good-bg:rgba(57,255,138,0.10);
       --bad:#FF9F40; --bad-bg:rgba(255,159,64,0.12);
@@ -37,7 +37,7 @@
   }
   :root[data-theme="dark"]{
     --bg:#080B0E; --panel:rgba(16,21,26,.78); --panel-2:rgba(20,26,32,.72); --border:#212930;
-    --text:#E8F1F5; --text-dim:#8FA1AB; --text-faint:#5A6B75;
+    --text:#E8F1F5; --text-dim:#8FA1AB; --text-faint:#7D8F99;
     --accent:#2BE8FF; --accent-strong:#7BF4FF; --accent-bg:rgba(43,232,255,0.12);
     --good:#39FF8A; --good-bg:rgba(57,255,138,0.10);
     --bad:#FF9F40; --bad-bg:rgba(255,159,64,0.12);
@@ -439,10 +439,23 @@
   .import-opt input{ margin-top:3px; accent-color:var(--accent); }
   .import-opt:has(input:checked){ border-color:var(--accent); background:var(--accent-bg); color:var(--text); }
 
+  td.note-cell{ color:var(--text-dim); }
+  @media (min-width:641px){ td.note-cell{ max-width:220px; } }
+  [role="button"][tabindex]:focus-visible, .swatch:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+  .swatch{ padding:0; }
+
   /* print preview / printing */
   #printRoot:empty{ display:none; }
   .print-overlay{ position:fixed; inset:0; z-index:80; background:rgba(4,6,8,.62); overflow:auto; padding:16px; -webkit-overflow-scrolling:touch; }
   .print-toolbar{ position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; max-width:210mm; margin:0 auto 12px; background:var(--panel); backdrop-filter:var(--blur); -webkit-backdrop-filter:var(--blur); border:1px solid var(--border); border-radius:12px; padding:10px 12px; color:var(--text); }
+  @media screen and (max-width:640px){
+    .print-overlay{ padding:8px; }
+    .print-page{ padding:5mm !important; overflow-x:auto; }
+    .print-page .rep-sum{ grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+    .print-page .doc-grid{ grid-template-columns:minmax(0,32mm) minmax(0,1fr) !important; }
+    .print-page .doc{ padding:5mm !important; }
+    .print-page .doc-sign{ gap:6mm !important; }
+  }
   @media print{
     html, body{ background:#fff !important; }
     body::before, body::after{ display:none !important; }
@@ -668,6 +681,7 @@ function plForm(n, one, few, many){
   return (d>=2 && d<=4 && (h<12 || h>14)) ? few : many;
 }
 function palet(n){ return `${num(n)} ${plForm(n,'paleta','palety','palet')}`; }
+function paletAcc(n){ return `${num(n)} ${plForm(n,'paletę','palety','palet')}`; } // biernik: „ma u siebie 1 paletę”
 function dni(n){ return `${num(n)} ${n===1?'dzień':'dni'}`; }
 function opsLabel(n){ return `${num(n)} ${plForm(n,'operacja','operacje','operacji')}`; }
 
@@ -832,13 +846,13 @@ async function migrateDockets(){
 // Online an uploaded logo is served at /_blob/<id>; the offline build (runtime-lokalny.js) can
 // map the same id to its own URL through window.EP_LOCAL.assetUrl, so this file stays identical.
 function assetSrc(id){
-  try{ if(window.EP_LOCAL && typeof window.EP_LOCAL.assetUrl==='function'){ const u = window.EP_LOCAL.assetUrl(id); if(u) return u; } }catch(e){}
-  return `/_blob/${id}`;
+  try{ if(window.EP_LOCAL && typeof window.EP_LOCAL.assetUrl==='function') return window.EP_LOCAL.assetUrl(id) || null; }catch(e){ return null; }
+  return `/_blob/${encodeURIComponent(id)}`;
 }
 function courierBadge(courier, size){
   size = size||36;
   if(!courier) return `<div class="badge-init" style="width:${size}px;height:${size}px;border-radius:8px;background:var(--panel-2);"></div>`;
-  const logoSrc = courier.logoAssetId ? assetSrc(courier.logoAssetId) : DEFAULT_LOGOS[courier.id];
+  const logoSrc = courier.noLogo ? null : ((courier.logoAssetId && assetSrc(courier.logoAssetId)) || DEFAULT_LOGOS[courier.id]);
   if(logoSrc){
     return `<img class="badge" src="${escapeHtml(logoSrc)}" alt="${escapeHtml(courier.name)}" style="width:${size}px;height:${size}px;background:#fff;padding:4px;border:1px solid var(--border);">`;
   }
@@ -1016,6 +1030,26 @@ function periodBounds(period){
 }
 
 /* ---------------------------- RENDER ROOT ---------------------------- */
+// Data arrived while the operation form is open: keep everything typed, but bring the courier list and
+// the balance hint up to date (e.g. a courier just created from this form, or a save on another device).
+let opFormHintUpdater = null;
+function refreshOpFormCouriers(){
+  const sel = document.getElementById('kurierSelect'); if(!sel) return;
+  const cur = sel.value;
+  const ids = [...sel.options].map(o=>o.value).filter(v=>v!=='__new__');
+  const wanted = couriers.filter(c=>isEnabled(c) || c.id===cur).map(c=>c.id);
+  const missing = wanted.filter(id=>!ids.includes(id));
+  missing.forEach(id=>{ const c = courierById(id); const o = document.createElement('option'); o.value = id; o.textContent = c.name; sel.insertBefore(o, sel.querySelector('option[value="__new__"]')); });
+  [...sel.options].forEach(o=>{ const c = courierById(o.value); if(c && o.textContent!==c.name && !/\(usunięty\)$/.test(o.textContent)) o.textContent = c.name; });
+  if(opFormHintUpdater) opFormHintUpdater();
+}
+// a just-saved operation / courier shows up immediately, without waiting for the database echo
+function applyLocalTx(id, doc){
+  if(olderTx.has(id)) olderTx.set(id, {...doc, id});
+  const i = liveTx.findIndex(t=>t.id===id);
+  if(i>-1) liveTx[i] = {...doc, id}; else if(!olderTx.has(id)) liveTx.push({...doc, id});
+  mergeTransactions();
+}
 function goView(view){ currentView = view; editingId = null; render(); window.scrollTo(0,0); }
 function renderNav(){
   const activeId = currentView==='courierDetail' ? 'stats' : currentView;
@@ -1087,7 +1121,7 @@ function render(fromData){
   const selStart = focusId && typeof active.selectionStart==='number' ? active.selectionStart : null;
   const selEnd = focusId && typeof active.selectionEnd==='number' ? active.selectionEnd : null;
 
-  if(fromData && currentView==='new' && document.getElementById('opForm')) return;
+  if(fromData && currentView==='new' && document.getElementById('opForm')){ refreshOpFormCouriers(); return; }
   if(currentView==='dashboard') main.innerHTML = viewDashboard();
   else if(currentView==='new') main.innerHTML = viewNewOp(editingId);
   else if(currentView==='history') main.innerHTML = viewHistory();
@@ -1141,8 +1175,8 @@ function viewDashboard(){
   const stale = staleCourierList();
 
   function balanceMeta(bilans){
-    if(bilans>0) return { caption:`Kurier jest nam winien ${palet(bilans)}`, title:`Kurier ma u siebie ${palet(bilans)} i jeszcze ich nie oddał.` };
-    if(bilans<0) return { caption:`My jesteśmy winni kurierowi ${palet(Math.abs(bilans))}`, title:`Oddaliśmy kurierowi więcej palet niż od niego dostaliśmy (różnica ${num(Math.abs(bilans))} szt.) — warto sprawdzić wpisy w historii.` };
+    if(bilans>0) return { caption:`Kurier jest nam winien ${paletAcc(bilans)}`, title:`Kurier ma u siebie ${paletAcc(bilans)} należących do nas i jeszcze ich nie oddał.` };
+    if(bilans<0) return { caption:`My jesteśmy winni kurierowi ${paletAcc(Math.abs(bilans))}`, title:`Oddaliśmy kurierowi więcej palet niż od niego dostaliśmy (różnica ${num(Math.abs(bilans))} szt.) — warto sprawdzić wpisy w historii.` };
     return { caption:`Rozliczone — brak zaległości`, title:`Tyle samo palet wydanych, co zwróconych.` };
   }
 
@@ -1152,7 +1186,7 @@ function viewDashboard(){
     </div>
 
     ${stale.length? `<div class="alert-strip" role="note">
-      ${stale.map(b=>`<div>▲ <b>${escapeHtml(b.courier.name)}</b> ma u siebie ${palet(b.bilans)} — ${b.info.status==='never' ? 'nie oddał jeszcze żadnej palety' : `ostatni zwrot ${dni(b.info.days)} temu (${fmtDate(b.info.date)})`}.</div>`).join('')}
+      ${stale.map(b=>`<div>▲ <b>${escapeHtml(b.courier.name)}</b> ma u siebie ${paletAcc(b.bilans)} — ${b.info.status==='never' ? 'nie oddał jeszcze żadnej palety' : `ostatni zwrot ${dni(b.info.days)} temu (${fmtDate(b.info.date)})`}.</div>`).join('')}
     </div>` : ''}
 
     <div class="panel-title"><h2>Palety u kurierów — szczegóły</h2><span class="hint">wydane − zwrócone, w rozbiciu na kurierów</span></div>
@@ -1245,7 +1279,7 @@ function viewNewOp(editId){
           </div>
 
           <div class="field span2">
-            <label>Kurier <span class="req">*</span></label>
+            <label for="kurierSelect">Kurier <span class="req">*</span></label>
             <select name="kurierId" id="kurierSelect" required>
               ${courierOptions}
               <option value="__new__">+ Dodaj nowego kuriera…</option>
@@ -1253,23 +1287,23 @@ function viewNewOp(editId){
             <div class="hint-line" id="balanceHint"></div>
           </div>
           <div class="field span2" id="newCourierField" style="display:none;">
-            <label>Nazwa nowego kuriera</label>
-            <input type="text" name="newCourierName" maxlength="60" placeholder="np. Fedex">
+            <label for="newCourierName">Nazwa nowego kuriera</label>
+            <input type="text" id="newCourierName" name="newCourierName" maxlength="60" placeholder="np. Fedex">
           </div>
 
           <div class="field">
-            <label>Ilość palet <span class="req">*</span></label>
+            <label for="opIlosc">Ilość palet <span class="req">*</span></label>
             <input type="number" inputmode="numeric" name="ilosc" id="opIlosc" min="1" max="100000" step="1" value="${editing? editing.ilosc:''}" placeholder="np. 12" required>
           </div>
 
           <div class="field">
-            <label>Data operacji <span class="req">*</span></label>
-            <input type="date" name="data" value="${dateVal}" max="${todayStr()}" required>
+            <label for="opData">Data operacji <span class="req">*</span></label>
+            <input type="date" id="opData" name="data" value="${dateVal}" max="${todayStr()}" required>
           </div>
 
           <div class="field span2">
-            <label>Uwagi</label>
-            <textarea name="uwagi" maxlength="500" placeholder="np. stan palet, kierowca, uwagi dodatkowe...">${editing? escapeHtml(editing.uwagi||''):''}</textarea>
+            <label for="opUwagi">Uwagi</label>
+            <textarea id="opUwagi" name="uwagi" maxlength="500" placeholder="np. stan palet, kierowca, uwagi dodatkowe...">${editing? escapeHtml(editing.uwagi||''):''}</textarea>
           </div>
 
           <div class="form-actions" style="flex-wrap:wrap;">
@@ -1335,23 +1369,23 @@ function viewHistory(){
 
     <div class="filters">
       <div class="field grow search-wrap">
-        <label>Szukaj</label>
+        <label for="fltQ">Szukaj</label>
         <div style="position:relative;">${ICONS.search}<input type="text" id="fltQ" placeholder="kurier, uwagi, nr dokumentu…" value="${escapeHtml(historyFilters.q)}" aria-label="Szukaj w historii"></div>
       </div>
       <div class="field">
-        <label>Kurier</label>
+        <label for="fltKurier">Kurier</label>
         <select id="fltKurier"><option value="all">Wszyscy</option>${historyCourierOptions().map(c=>`<option value="${escapeHtml(c.id)}" ${historyFilters.kurier===c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('')}</select>
       </div>
       <div class="field">
-        <label>Typ</label>
+        <label for="fltTyp">Typ</label>
         <select id="fltTyp">
           <option value="all" ${historyFilters.typ==='all'?'selected':''}>Wszystkie</option>
           <option value="wydanie" ${historyFilters.typ==='wydanie'?'selected':''}>Wydania</option>
           <option value="zwrot" ${historyFilters.typ==='zwrot'?'selected':''}>Zwroty</option>
         </select>
       </div>
-      <div class="field"><label>Od</label><input type="date" id="fltFrom" value="${historyFilters.from}"></div>
-      <div class="field"><label>Do</label><input type="date" id="fltTo" value="${historyFilters.to}"></div>
+      <div class="field"><label for="fltFrom">Od</label><input type="date" id="fltFrom" value="${historyFilters.from}"></div>
+      <div class="field"><label for="fltTo">Do</label><input type="date" id="fltTo" value="${historyFilters.to}"></div>
       <button class="btn btn-ghost btn-sm" data-action="clear-filters">${ICONS.filterX}Wyczyść</button>
     </div>
 
@@ -1367,7 +1401,7 @@ function viewHistory(){
               <td data-label="Kurier">${escapeHtml(txCourierName(t))}</td>
               <td data-label="Typ"><span class="type-badge ${t.typ}">${t.typ==='wydanie'?'Wydanie':'Zwrot'}</span></td>
               <td class="num" data-label="Ilość">${num(t.ilosc)}</td>
-              <td data-label="Uwagi" style="color:var(--text-dim); max-width:220px;">${escapeHtml(t.uwagi||'—')}</td>
+              <td data-label="Uwagi" class="note-cell">${escapeHtml(t.uwagi||'—')}</td>
               <td data-label=""><div class="row-actions">
                 <button class="icon-btn accent" data-action="print-op" data-id="${t.id}" title="Drukuj dokument" aria-label="Drukuj dokument ${escapeHtml(docketMap[t.id]||'')}">${ICONS.printer}</button>
                 <button class="icon-btn accent" data-action="edit" data-id="${t.id}" title="Edytuj" aria-label="Edytuj operację ${escapeHtml(docketMap[t.id]||'')}">${ICONS.edit}</button>
@@ -1614,8 +1648,8 @@ function viewStats(){
     else if(last4W===prev4W) insights.push({ tone:'info', text:`Wydania w ostatnich 4 pełnych tyg. bez zmian względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
     else insights.push({ tone:'info', text:`Wydania ${last4W>prev4W?'rosną':'maleją'} o <b>${pctLabel(last4W,prev4W).replace(/^[+-]/,'')}</b> w ostatnich 4 pełnych tyg. względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
   }
-  insights.push({ tone:'info', text:`Ten tydzień (${weekDayIdx===0?'dziś':'pon.–dziś'}): wydano <b>${num(thisWeekW)} szt.</b>; w tych samych dniach poprzedniego tygodnia: ${num(lastWeekW)} szt. (${pctLabel(thisWeekW,lastWeekW)}). Cały poprzedni tydzień: ${num(lastWeekFullW)} szt.` });
-  insights.push({ tone:'info', text:`Ten miesiąc (1.–${dayOfMonth}.): wydano <b>${num(thisMonthW)} szt.</b>; w tym samym okresie poprzedniego miesiąca: ${num(prevMonthW)} szt. (${pctLabel(thisMonthW,prevMonthW)}). Cały poprzedni miesiąc: ${num(prevMonthFullW)} szt.` });
+  if(transactions.length) insights.push({ tone:'info', text:`Ten tydzień (${weekDayIdx===0?'dziś':'pon.–dziś'}): wydano <b>${num(thisWeekW)} szt.</b>; w tych samych dniach poprzedniego tygodnia: ${num(lastWeekW)} szt. (${pctLabel(thisWeekW,lastWeekW)}). Cały poprzedni tydzień: ${num(lastWeekFullW)} szt.` });
+  if(transactions.length) insights.push({ tone:'info', text:`Ten miesiąc (1.–${dayOfMonth}.): wydano <b>${num(thisMonthW)} szt.</b>; w tym samym okresie poprzedniego miesiąca: ${num(prevMonthW)} szt. (${pctLabel(thisMonthW,prevMonthW)}). Cały poprzedni miesiąc: ${num(prevMonthFullW)} szt.` });
   if(peakWeekdayIdx>=0 && peakWeekdayOcc>0) insights.push({ tone:'info', text:`<b>${WEEKDAYS_PL[peakWeekdayIdx]}</b> to Twój najbardziej pracowity dzień tygodnia — średnio <b>${fmt1(peakWeekdayAvg)} szt.</b> wydania (łącznie ${num(peakWeekdayVal)} szt. z ${peakWeekdayOcc} ${peakWeekdayOcc===1?'dnia':'dni'}, w które były wydania).` });
   if(topMonthsList[0]) insights.push({ tone:'info', text:`Najbardziej aktywny miesiąc: <b>${monthLabel(topMonthsList[0].mk)}</b> — wydano ${num(topMonthsList[0].w)} szt.` });
   if(avgPerActiveDay>0) insights.push({ tone:'info', text:`Średnio wydajesz <b>${fmt1(avgPerActiveDay)} szt.</b> w dniu, w którym w ogóle są wydania.` });
@@ -1704,7 +1738,7 @@ function viewStats(){
           <thead><tr><th>Kurier</th><th class="num">Wydane</th><th class="num">Zwrócone</th><th class="num" title="Wydane minus zwrócone w wybranym okresie (bez stanu początkowego).">Różnica w okresie</th><th class="num" title="Ile palet kurier ma u siebie dzisiaj (łącznie ze stanem początkowym).">Bilans dziś</th><th class="num">Udział</th></tr></thead>
           <tbody>
             ${courierRows.map(c=>`
-              <tr class="clickable" data-action="open-courier" data-id="${c.id}">
+              <tr class="clickable" data-action="open-courier" data-id="${escapeHtml(c.id)}" tabindex="0" role="button" aria-label="Szczegóły kuriera ${escapeHtml(c.name)}">
                 <td data-label="Kurier" style="display:flex;align-items:center;gap:9px;">${courierBadge(courierById(c.id)||{name:c.name,color:c.color},22)}${escapeHtml(c.name)}</td>
                 <td class="num" data-label="Wydane">${num(c.wydane)}</td>
                 <td class="num" data-label="Zwrócone">${num(c.zwrot)}</td>
@@ -1804,7 +1838,7 @@ function statementPrintHtml(courier, st, from, to){
     <table class="rep-table"><thead><tr><th>Data</th><th>Dokument</th><th>Operacja</th><th class="n">Wydane</th><th class="n">Zwrócone</th><th class="n">Saldo</th><th>Uwagi</th></tr></thead><tbody>
       ${st.rows.length? st.rows.map(r=>`<tr><td>${fmtDate(r.t.data)}</td><td>${escapeHtml(map[r.t.id]||'')}</td><td>${r.t.typ==='wydanie'?'wydanie':'zwrot'}</td><td class="n">${r.t.typ==='wydanie'?num(r.t.ilosc):''}</td><td class="n">${r.t.typ==='zwrot'?num(r.t.ilosc):''}</td><td class="n">${num(r.bal)}</td><td>${escapeHtml(r.t.uwagi||'')}</td></tr>`).join('') : `<tr><td colspan="7">Brak operacji w tym okresie.</td></tr>`}
     </tbody></table>
-    <div class="rep-final">${st.endBal>0 ? `Stan na ${to? fmtDate(to) : fmtDate(todayStr())}: kurier ma u siebie ${palet(st.endBal)} należących do magazynu.` : st.endBal<0 ? `Stan na ${to? fmtDate(to) : fmtDate(todayStr())}: magazyn jest winien kurierowi ${palet(Math.abs(st.endBal))}.` : `Stan na ${to? fmtDate(to) : fmtDate(todayStr())}: rozliczone, brak zaległości.`}</div>
+    <div class="rep-final">${st.endBal>0 ? `Stan na ${to? fmtDate(to) : fmtDate(todayStr())}: u kuriera pozostaje ${num(st.endBal)} szt. palet należących do magazynu.` : st.endBal<0 ? `Stan na ${to? fmtDate(to) : fmtDate(todayStr())}: magazyn jest winien kurierowi ${num(Math.abs(st.endBal))} szt. palet.` : `Stan na ${to? fmtDate(to) : fmtDate(todayStr())}: rozliczone, brak zaległości.`}</div>
     <div class="doc-sign"><div>Za magazyn<br>data i podpis</div><div>Za kuriera (${escapeHtml(courier.name)})<br>data i podpis</div></div>`;
 }
 
@@ -1890,9 +1924,9 @@ function viewCourierDetail(id){
       </div>
 
       <div class="week-nav">
-        <button class="nav-arrow" data-action="week-prev">${ICONS.chevLeft}</button>
+        <button class="nav-arrow" data-action="week-prev" aria-label="Poprzedni tydzień" title="Poprzedni tydzień">${ICONS.chevLeft}</button>
         <div class="label">${weekLabel(days[0])}${isCurrentWeek? '<span class="badge-cur">bieżący</span>':''}</div>
-        <button class="nav-arrow" data-action="week-next">${ICONS.chevRight}</button>
+        <button class="nav-arrow" data-action="week-next" aria-label="Następny tydzień" title="Następny tydzień">${ICONS.chevRight}</button>
       </div>
       <div class="table-wrap">
         <table class="table-card" style="min-width:0;">
@@ -1954,9 +1988,9 @@ function viewCourierDetail(id){
       <div class="panel-title">
         <h2>Eksplorator roczny</h2>
         <div class="week-nav" style="margin:0; width:auto;">
-          <button class="nav-arrow" data-action="year-prev" ${cdYear<=minYear?'disabled':''}>${ICONS.chevLeft}</button>
+          <button class="nav-arrow" data-action="year-prev" aria-label="Poprzedni rok" title="Poprzedni rok" ${cdYear<=minYear?'disabled':''}>${ICONS.chevLeft}</button>
           <div class="label" style="min-width:52px;">${cdYear}</div>
-          <button class="nav-arrow" data-action="year-next" ${cdYear>=maxYear?'disabled':''}>${ICONS.chevRight}</button>
+          <button class="nav-arrow" data-action="year-next" aria-label="Następny rok" title="Następny rok" ${cdYear>=maxYear?'disabled':''}>${ICONS.chevRight}</button>
         </div>
       </div>
       ${monthsRows.map(m=>{
@@ -1964,7 +1998,7 @@ function viewCourierDetail(id){
         const weeks = isOpen ? weeksOverlappingMonth(cdYear, m.idx) : [];
         return `
         <div class="acc-item">
-          <div class="acc-head ${isOpen?'open':''}" data-action="toggle-month" data-mk="${m.mk}">
+          <div class="acc-head ${isOpen?'open':''}" data-action="toggle-month" data-mk="${m.mk}" tabindex="0" role="button" aria-expanded="${isOpen}">
             <div class="name">${ICONS.chevRight}${MONTHS_PL_FULL[m.idx]}</div>
             <div class="stats"><span class="w">${m.w? '+'+num(m.w):'—'}</span><span class="z">${m.z? '−'+num(m.z):'—'}</span></div>
           </div>
@@ -1977,7 +2011,7 @@ function viewCourierDetail(id){
               const w = txW.filter(t=>t.typ==='wydanie').reduce((s,t)=>s+t.ilosc,0);
               const z = txW.filter(t=>t.typ==='zwrot').reduce((s,t)=>s+t.ilosc,0);
               return `
-                <div class="week-row" data-action="toggle-week" data-wk="${wk}">
+                <div class="week-row" data-action="toggle-week" data-wk="${wk}" tabindex="0" role="button" aria-expanded="${wkOpen}">
                   <div class="rng">${wkOpen?ICONS.chevRight.replace('class="chev"','class="chev" style="transform:rotate(90deg);width:13px;height:13px;"'):ICONS.chevRight.replace('class="chev"','class="chev" style="width:13px;height:13px;"')}${rangeLabel(wFrom, wTo)}</div>
                   <div class="stats"><span style="color:var(--bad)">${w?'+'+num(w):'—'}</span><span style="color:var(--good)">${z?'−'+num(z):'—'}</span></div>
                 </div>
@@ -2018,7 +2052,7 @@ function viewCouriers(){
 
     <div class="panel" style="padding:6px 18px;">
       ${balances.length? balances.map((b,i)=>`
-        <div class="courier-row" data-action="edit-courier" data-id="${b.courier.id}" style="cursor:pointer;">
+        <div class="courier-row" data-action="edit-courier" data-id="${escapeHtml(b.courier.id)}" style="cursor:pointer;" tabindex="0" role="button" aria-label="Edytuj kuriera ${escapeHtml(b.courier.name)}">
           ${courierBadge(b.courier,40)}
           <div class="info">
             <div class="nm">${escapeHtml(b.courier.name)}</div>
@@ -2072,12 +2106,12 @@ function dataIssues(){
   });
   // more returned than issued
   courierBalances().forEach(b=>{
-    if(b.bilans<0) issues.push({level:'warn', text:`<b>${escapeHtml(b.courier.name)}</b>: zwrócono o ${palet(-b.bilans)} więcej, niż wydano. Brakuje wpisu wydania albo stanu początkowego?`, actions: courierById(b.courier.id) ? [{label:'Szczegóły', act:'courier', id:b.courier.id}] : []});
+    if(b.bilans<0) issues.push({level:'warn', text:`<b>${escapeHtml(b.courier.name)}</b>: zwrócono o ${num(-b.bilans)} szt. więcej, niż wydano. Brakuje wpisu wydania albo stanu początkowego?`, actions: courierById(b.courier.id) ? [{label:'Szczegóły', act:'courier', id:b.courier.id}] : []});
   });
   // operations of deleted couriers
   const orphans = {};
   transactions.forEach(t=>{ if(!courierById(t.kurierId)){ const o = orphans[t.kurierId] = orphans[t.kurierId] || {name:t.kurierNazwa||t.kurierId, n:0, bal:0}; o.n++; o.bal += t.typ==='wydanie' ? t.ilosc : -t.ilosc; } });
-  Object.entries(orphans).forEach(([id,o])=> issues.push({level:'info', text:`${opsLabel(o.n)} usuniętego kuriera „${escapeHtml(o.name)}” (bilans ${o.bal>0?'+':''}${num(o.bal)}) — nadal liczą się do sumy palet u kurierów.`, actions:[{label:'Przywróć kuriera', act:'restore-courier', id, name:o.name}]}));
+  Object.entries(orphans).forEach(([id,o])=> issues.push({level:'info', text:`${opsLabel(o.n)} usuniętego kuriera „${escapeHtml(o.name)}” (bilans ${o.bal>0?'+':''}${num(o.bal)}) — ${plForm(o.n,'nadal liczy się','nadal liczą się','nadal liczy się')} do sumy palet u kurierów.`, actions:[{label:'Przywróć kuriera', act:'restore-courier', id, name:o.name}]}));
   // odd values
   transactions.forEach(t=>{
     if(!Number.isInteger(t.ilosc) || t.ilosc<1) issues.push({level:'warn', text:`Operacja <b>${escapeHtml(map[t.id]||'')}</b> ma nieprawidłową ilość (${escapeHtml(t.ilosc)}).`, actions:[{label:'Popraw', act:'edit', id:t.id}]});
@@ -2141,7 +2175,8 @@ async function exportBackup(){
   const logos = {};
   for(const c of couriers){
     if(!c.logoAssetId) continue;
-    try{ const r = await fetch(assetSrc(c.logoAssetId)); if(r.ok) logos[c.logoAssetId] = await blobToDataUrl(await r.blob()); }
+    const src = assetSrc(c.logoAssetId); if(!src) continue;
+    try{ const r = await fetch(src); if(r.ok) logos[c.logoAssetId] = await blobToDataUrl(await r.blob()); }
     catch(e){ console.warn('Nie udało się dołączyć logo', c.id, e); }
   }
   const backup = {
@@ -2168,6 +2203,7 @@ function parseBackup(text){
     if(Number.isInteger(c.openingWydane) && c.openingWydane>0) d.openingWydane = c.openingWydane;
     if(Number.isInteger(c.openingZwrot) && c.openingZwrot>0) d.openingZwrot = c.openingZwrot;
     if(typeof c.logoAssetId==='string' && c.logoAssetId) d.logoAssetId = c.logoAssetId;
+    if(c.noLogo===true) d.noLogo = true;
     out.couriers.push({id:c.id, data:d});
   });
   j.transactions.forEach(t=>{
@@ -2194,8 +2230,8 @@ async function importBackupFile(file){
     <h2>Wczytać kopię?</h2>
     <div class="modal-sub">Plik${when && !isNaN(when) ? ` z ${when.toLocaleDateString('pl-PL')} ${when.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})}` : ''}: kurierzy ${num(parsed.couriers.length)}, ${opsLabel(parsed.transactions.length)}${dates.length ? ` (${fmtDate(dates[0])} – ${fmtDate(dates[dates.length-1])})` : ''}.${parsed.skipped ? ` Pominięto uszkodzone wpisy: ${num(parsed.skipped)}.` : ''}<br>Teraz w aplikacji: kurierzy ${num(couriers.length)}, ${opsLabel(transactions.length)}; te same operacje w obu: ${num(common)}.</div>
     <div style="display:flex; flex-direction:column; gap:10px;">
-      <label class="import-opt"><input type="radio" name="importMode" value="merge" checked><span><b>Połącz</b> — dodaj z pliku tylko to, czego tu brakuje. Nic nie zostanie usunięte ani nadpisane.</span></label>
-      <label class="import-opt"><input type="radio" name="importMode" value="replace"><span><b>Zastąp wszystko</b> — usuń obecnych kurierów i operacje i odtwórz dokładnie stan z pliku.</span></label>
+      <label class="import-opt"><input type="radio" name="importMode" value="merge" ${transactions.length ? 'checked' : ''}><span><b>Połącz</b> — dodaj z pliku tylko to, czego tu brakuje. Nic nie zostanie usunięte ani nadpisane.</span></label>
+      <label class="import-opt"><input type="radio" name="importMode" value="replace" ${transactions.length ? '' : 'checked'}><span><b>Zastąp wszystko</b> — usuń obecnych kurierów i operacje i odtwórz dokładnie stan z pliku.</span></label>
     </div>
     <div class="modal-close-row"><button type="button" class="btn" data-action="close-modal">Anuluj</button><button type="button" class="btn btn-primary" id="importGo">${ICONS.upload}Wczytaj</button></div>
   `);
@@ -2204,7 +2240,7 @@ async function importBackupFile(file){
     const mode = (document.querySelector('#modalRoot input[name=importMode]:checked')||{}).value || 'merge';
     closeModal();
     if(mode==='replace'){
-      const ok = await confirmDialog('Zastąpić wszystkie dane?', `Obecni kurierzy i operacje (${opsLabel(transactions.length)}) zostaną usunięci i zastąpieni zawartością pliku. Jeśli nie masz kopii obecnych danych, anuluj i najpierw ją pobierz.`, {okLabel:'Zastąp'});
+      const ok = !transactions.length || await confirmDialog('Zastąpić wszystkie dane?', `Obecni kurierzy i operacje (${opsLabel(transactions.length)}) zostaną usunięci i zastąpieni zawartością pliku. Jeśli nie masz kopii obecnych danych, anuluj i najpierw ją pobierz.`, {okLabel:'Zastąp'});
       if(!ok) return;
     }
     runImport(parsed, mode);
@@ -2214,7 +2250,15 @@ async function importBackupFile(file){
 async function runImport(parsed, mode){
   const info = runtimeInfo();
   const txById = new Map(transactions.map(t=>[t.id,t])), cById = new Map(couriers.map(c=>[c.id,c]));
-  const addC = parsed.couriers.filter(c=> mode==='replace' || !cById.has(c.id));
+  // a default courier that was only auto-created (never renamed, used, given a logo or an opening
+  // balance) is replaced by the file's version even in "Połącz" mode — otherwise importing into a
+  // fresh install would silently drop names, opening balances and on/off settings from the backup
+  const untouchedDefault = (c)=>{ const d = DEFAULT_COURIERS.find(x=>x.id===c.id); return d && !c.custom && c.name===d.name && !c.logoAssetId && !c.openingWydane && !c.openingZwrot && !transactions.some(t=>t.kurierId===c.id); };
+  const addC = parsed.couriers.filter(c=> mode==='replace' || !cById.has(c.id) || untouchedDefault(cById.get(c.id)));
+  if(mode==='merge'){
+    let nextOrder = Math.max(0, ...couriers.filter(c=>!addC.some(a=>a.id===c.id)).map(c=>Number.isFinite(c.order)?c.order:0));
+    addC.forEach(c=>{ if(!cById.has(c.id) && couriers.some(x=>x.order===c.data.order)) c.data.order = ++nextOrder; });
+  }
   const addT = parsed.transactions.filter(t=> mode==='replace' || !txById.has(t.id));
   if(info.mode==='claude'){
     const finalCount = mode==='replace' ? parsed.couriers.length + parsed.transactions.length + 1 : couriers.length + transactions.length + 1 + addC.length + addT.length;
@@ -2263,8 +2307,11 @@ async function runImport(parsed, mode){
     });
     if(!(settings && settings.seeded)){ await db.doc('meta/settings').set({...(settings||{}), seeded:true}); }
   }catch(e){ failed++; console.error(e); }
-  if(mode==='replace') olderTx.clear();
   couriersSeeded = true; importRunning = false; bulkWriting = false; docketMigrationDone = false;
+  // imported operations older than the live window are not delivered by the subscription — reload that part
+  olderTx.clear(); olderBoundary = null;
+  if(liveTx.length >= TX_WINDOW){ olderBoundary = liveTx[liveTx.length-1].data; historyComplete = false; await loadOlderTransactions(olderBoundary); }
+  else historyComplete = true;
   closeModal(); mergeTransactions(); render(); migrateDockets();
   if(failed) toast(`Wczytano z błędami: nie zapisano ${num(failed)} z ${num(writes.length)} wpisów. Spróbuj ponownie (tryb „Połącz” uzupełni braki).`, true);
   else toast(`Wczytano kopię: kurierzy ${num(addC.length)}, ${opsLabel(addT.length)}${mode==='replace' && writes.some(w=>w.op==='delete') ? `, usunięto ${num(writes.filter(w=>w.op==='delete').length)}` : ''}.`);
@@ -2321,12 +2368,35 @@ function exportStatementCsv(id){
 
 /* ---------------------------- MODALS ---------------------------- */
 let modalCancelHook = null; // set by confirmModal so Escape / overlay click resolve its promise as "cancel"
+let modalOpener = null, printOpener = null;
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]):not(.visually-hidden), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+// while a dialog is open, the page behind it can't be reached with Tab
+function setBackgroundInert(on){ ['.app', '#bottomNav'].forEach(sel=>{ const el = document.querySelector(sel); if(el){ if(on) el.setAttribute('inert',''); else el.removeAttribute('inert'); } }); }
+function trapTab(container, e){
+  if(e.key!=='Tab') return;
+  const items = [...container.querySelectorAll(FOCUSABLE)].filter(el=>el.offsetParent!==null || el===document.activeElement);
+  if(!items.length) return;
+  const first = items[0], last = items[items.length-1];
+  if(e.shiftKey && document.activeElement===first){ e.preventDefault(); last.focus(); }
+  else if(!e.shiftKey && document.activeElement===last){ e.preventDefault(); first.focus(); }
+}
 function openModal(html){
   modalCancelHook = null;
-  document.getElementById('modalRoot').innerHTML = `<div class="modal-overlay" id="modalOverlay"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
+  if(!document.getElementById('modalRoot').innerHTML) modalOpener = document.activeElement;
+  document.getElementById('modalRoot').innerHTML = `<div class="modal-overlay" id="modalOverlay"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">${html}</div></div>`;
+  const modal = document.querySelector('#modalRoot .modal');
+  const h = modal.querySelector('h2'); if(h) h.id = 'modalTitle';
+  setBackgroundInert(true);
   document.getElementById('modalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='modalOverlay') dismissModal(); });
+  modal.addEventListener('keydown', (e)=>trapTab(modal, e));
+  setTimeout(()=>{ if(!modal.isConnected || modal.contains(document.activeElement)) return; const f = modal.querySelector('input:not([type=hidden]):not(.visually-hidden):not([type=radio]), select, textarea') || modal.querySelector(FOCUSABLE); if(f) f.focus(); }, 0);
 }
-function closeModal(){ modalCancelHook = null; document.getElementById('modalRoot').innerHTML=''; }
+function closeModal(){
+  modalCancelHook = null; document.getElementById('modalRoot').innerHTML='';
+  if(!document.getElementById('printRoot').innerHTML) setBackgroundInert(false);
+  const back = modalOpener; modalOpener = null;
+  if(back && back.isConnected && typeof back.focus==='function') back.focus({preventScroll:true});
+}
 function dismissModal(){ if(importRunning) return; const h = modalCancelHook; if(h){ modalCancelHook = null; h(); } else closeModal(); }
 document.addEventListener('keydown', (e)=>{
   if(e.key!=='Escape') return;
@@ -2368,6 +2438,7 @@ document.head.insertAdjacentHTML('beforeend', `<style id="printDocCss">${PRINT_D
 
 function openPrint(title, bodyHtml, filename){
   const root = document.getElementById('printRoot');
+  if(!root.innerHTML) printOpener = document.activeElement;
   root.innerHTML = `<div class="print-overlay" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
     <div class="print-toolbar">
       <b style="font-size:14px;">${escapeHtml(title)}</b>
@@ -2387,9 +2458,17 @@ function openPrint(title, bodyHtml, filename){
     saveFile(filename, doc, 'text/html');
   });
   root.querySelector('[data-print="close"]').addEventListener('click', closePrint);
+  const overlay = root.querySelector('.print-overlay');
+  overlay.addEventListener('keydown', (e)=>trapTab(root.querySelector('.print-toolbar'), e));
+  setBackgroundInert(true);
   setTimeout(()=>{ const b = root.querySelector('[data-print="print"]'); if(b) b.focus(); }, 0);
 }
-function closePrint(){ document.getElementById('printRoot').innerHTML = ''; }
+function closePrint(){
+  document.getElementById('printRoot').innerHTML = '';
+  if(!document.getElementById('modalRoot').innerHTML) setBackgroundInert(false);
+  const back = printOpener; printOpener = null;
+  if(back && back.isConnected && typeof back.focus==='function') back.focus({preventScroll:true});
+}
 
 function docSheet(t, nr, copyLabel){
   const isW = t.typ==='wydanie';
@@ -2419,14 +2498,14 @@ function openAddCourierModal(){
     <h2>Dodaj kuriera</h2>
     <div class="modal-sub">Nowy przewoźnik pojawi się na pulpicie i w formularzu nowej operacji. Logo dodasz później z listy kurierów.</div>
     <form id="addCourierForm">
-      <div class="field" style="margin-bottom:12px;"><label>Nazwa kuriera <span class="req">*</span></label><input type="text" name="name" placeholder="np. Fedex, Raben, poczta własna..." required autofocus></div>
-      <div class="field"><label>Kolor etykiety</label><div class="swatch-picker" id="swatchPicker">${COURIER_COLORS.map((c,i)=>`<div class="swatch ${i===0?'sel':''}" style="background:${c}" data-color="${c}"></div>`).join('')}</div></div>
+      <div class="field" style="margin-bottom:12px;"><label for="addCourierName">Nazwa kuriera <span class="req">*</span></label><input type="text" id="addCourierName" name="name" maxlength="60" placeholder="np. Fedex, Raben, poczta własna..." required></div>
+      <div class="field"><span class="field-label" id="swatchLbl" style="font-size:12.5px; font-weight:600; color:var(--text-dim);">Kolor etykiety</span><div class="swatch-picker" id="swatchPicker" role="radiogroup" aria-labelledby="swatchLbl">${COURIER_COLORS.map((c,i)=>`<button type="button" class="swatch ${i===0?'sel':''}" style="background:${c}" data-color="${c}" role="radio" aria-checked="${i===0}" aria-label="Kolor ${i+1}"></button>`).join('')}</div></div>
       <div class="modal-close-row"><button type="button" class="btn" data-action="close-modal">Anuluj</button><button type="submit" class="btn btn-primary">Dodaj kuriera</button></div>
     </form>
   `);
   let selColor = COURIER_COLORS[0];
   document.querySelectorAll('#swatchPicker .swatch').forEach(sw=>{
-    sw.addEventListener('click', ()=>{ document.querySelectorAll('#swatchPicker .swatch').forEach(s=>s.classList.remove('sel')); sw.classList.add('sel'); selColor = sw.dataset.color; });
+    sw.addEventListener('click', ()=>{ document.querySelectorAll('#swatchPicker .swatch').forEach(s=>{ s.classList.remove('sel'); s.setAttribute('aria-checked','false'); }); sw.classList.add('sel'); sw.setAttribute('aria-checked','true'); selColor = sw.dataset.color; });
   });
   document.getElementById('addCourierForm').addEventListener('submit', async (e)=>{
     e.preventDefault(); const name = e.target.name.value.trim(); if(!name) return;
@@ -2437,12 +2516,12 @@ function openAddCourierModal(){
 
 function openEditCourierModal(id){
   const c = courierById(id); if(!c) return;
-  const hasLogo = !!(c.logoAssetId || DEFAULT_LOGOS[c.id]);
+  const hasLogo = !c.noLogo && !!(c.logoAssetId || DEFAULT_LOGOS[c.id]);
   openModal(`
     <h2>Edytuj kuriera</h2>
     <div class="modal-sub">Zmień logo, nazwę, kolor lub dostępność kuriera.</div>
     <div style="display:flex; flex-direction:column; align-items:center; gap:10px; margin-bottom:18px;">
-      <div id="editLogoPreview" data-action="trigger-logo-upload" style="cursor:pointer; position:relative;" title="Stuknij, aby zmienić logo">
+      <div id="editLogoPreview" data-action="trigger-logo-upload" style="cursor:pointer; position:relative;" title="Stuknij, aby zmienić logo" role="button" tabindex="0" aria-label="Zmień logo kuriera">
         ${courierBadge(c,76)}
         <div style="position:absolute; bottom:-4px; right:-4px; width:26px; height:26px; border-radius:50%; background:var(--accent); color:#04141A; display:flex; align-items:center; justify-content:center; box-shadow:0 0 0 2px var(--panel);">${ICONS.camera.replace('<svg ','<svg width="14" height="14" ')}</div>
       </div>
@@ -2451,18 +2530,18 @@ function openEditCourierModal(id){
       <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="visually-hidden" id="editLogoInput" data-id="${c.id}">
     </div>
     <form id="editCourierForm">
-      <div class="field" style="margin-bottom:12px;"><label>Nazwa</label><input type="text" name="name" value="${escapeHtml(c.name)}" required></div>
-      <div class="field" style="margin-bottom:14px;"><label>Kolor etykiety</label><div class="swatch-picker" id="editSwatchPicker">${COURIER_COLORS.map(col=>`<div class="swatch ${col.toLowerCase()===(c.color||'').toLowerCase()?'sel':''}" style="background:${col}" data-color="${col}"></div>`).join('')}</div></div>
+      <div class="field" style="margin-bottom:12px;"><label for="editCourierName">Nazwa</label><input type="text" id="editCourierName" name="name" maxlength="60" value="${escapeHtml(c.name)}" required></div>
+      <div class="field" style="margin-bottom:14px;"><span id="editSwatchLbl" style="font-size:12.5px; font-weight:600; color:var(--text-dim);">Kolor etykiety</span><div class="swatch-picker" id="editSwatchPicker" role="radiogroup" aria-labelledby="editSwatchLbl">${COURIER_COLORS.map((col,i)=>{ const on = col.toLowerCase()===(c.color||'').toLowerCase(); return `<button type="button" class="swatch ${on?'sel':''}" style="background:${col}" data-color="${col}" role="radio" aria-checked="${on}" aria-label="Kolor ${i+1}"></button>`; }).join('')}</div></div>
       <div style="display:flex; align-items:center; justify-content:space-between; padding:2px 0 16px;">
-        <label style="font-size:13px; font-weight:600; color:var(--text-dim);">Widoczny na pulpicie</label>
-        <label class="switch"><input type="checkbox" id="editEnabled" ${isEnabled(c)?'checked':''}><span class="slider"></span></label>
+        <label for="editEnabled" style="font-size:13px; font-weight:600; color:var(--text-dim);">Widoczny na pulpicie</label>
+        <label class="switch"><input type="checkbox" id="editEnabled" ${isEnabled(c)?'checked':''} aria-label="Widoczny na pulpicie"><span class="slider"></span></label>
       </div>
       <div style="border-top:1px solid var(--border); padding-top:14px; margin-bottom:16px;">
         <label style="font-size:13px; font-weight:600; color:var(--text-dim); display:block; margin-bottom:3px;">Stan początkowy (sprzed rozpoczęcia ewidencji)</label>
         <div style="font-size:12px; color:var(--text-faint); margin-bottom:10px; line-height:1.45;">Jednorazowa korekta, np. z wcześniejszej, papierowej ewidencji. Dolicza się do bilansu, sum „łącznie”, bilansu narastającego i wskaźników „od początku”, ale nie ma daty — nie trafia do statystyk tygodniowych, miesięcznych ani do wybranych okresów.</div>
         <div class="form-grid" style="max-width:none; gap:10px;">
-          <div class="field"><label>Wydane wcześniej</label><input type="number" inputmode="numeric" min="0" step="1" id="editOpeningWydane" value="${c.openingWydane||0}"></div>
-          <div class="field"><label>Zwrócone wcześniej</label><input type="number" inputmode="numeric" min="0" step="1" id="editOpeningZwrot" value="${c.openingZwrot||0}"></div>
+          <div class="field"><label for="editOpeningWydane">Wydane wcześniej</label><input type="number" inputmode="numeric" min="0" max="100000" step="1" id="editOpeningWydane" value="${c.openingWydane||0}"></div>
+          <div class="field"><label for="editOpeningZwrot">Zwrócone wcześniej</label><input type="number" inputmode="numeric" min="0" max="100000" step="1" id="editOpeningZwrot" value="${c.openingZwrot||0}"></div>
         </div>
       </div>
       <div class="modal-close-row" style="justify-content:space-between;">
@@ -2476,7 +2555,9 @@ function openEditCourierModal(id){
   `);
 
   const fileInput = document.getElementById('editLogoInput');
-  document.querySelector('[data-action="trigger-logo-upload"]').addEventListener('click', ()=> fileInput.click());
+  const logoBtn = document.querySelector('[data-action="trigger-logo-upload"]');
+  logoBtn.addEventListener('click', ()=> fileInput.click());
+  logoBtn.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); fileInput.click(); } });
   fileInput.addEventListener('change', async (e)=>{
     const file = e.target.files[0]; if(!file) return;
     const localUrl = URL.createObjectURL(file);
@@ -2490,7 +2571,7 @@ function openEditCourierModal(id){
 
   let selColor = c.color || COURIER_COLORS[0];
   document.querySelectorAll('#editSwatchPicker .swatch').forEach(sw=>{
-    sw.addEventListener('click', ()=>{ document.querySelectorAll('#editSwatchPicker .swatch').forEach(s=>s.classList.remove('sel')); sw.classList.add('sel'); selColor = sw.dataset.color; });
+    sw.addEventListener('click', ()=>{ document.querySelectorAll('#editSwatchPicker .swatch').forEach(s=>{ s.classList.remove('sel'); s.setAttribute('aria-checked','false'); }); sw.classList.add('sel'); sw.setAttribute('aria-checked','true'); selColor = sw.dataset.color; });
   });
 
   document.querySelector('[data-action="modal-delete-courier"]').addEventListener('click', (e)=>{
@@ -2502,11 +2583,14 @@ function openEditCourierModal(id){
 
   document.getElementById('editCourierForm').addEventListener('submit', async (e)=>{
     e.preventDefault();
-    const name = e.target.name.value.trim();
+    const name = e.target.name.value.trim().replace(/\s+/g,' ').slice(0,60);
     const enabled = document.getElementById('editEnabled').checked;
-    const openingWydane = Math.max(0, parseInt(document.getElementById('editOpeningWydane').value,10) || 0);
-    const openingZwrot = Math.max(0, parseInt(document.getElementById('editOpeningZwrot').value,10) || 0);
+    const readInt = (el)=>{ const raw = String(document.getElementById(el).value).trim(); if(raw==='') return 0; const n = Number(raw); return (Number.isInteger(n) && n>=0 && n<=100000) ? n : NaN; };
+    const openingWydane = readInt('editOpeningWydane'), openingZwrot = readInt('editOpeningZwrot');
     if(!name) return;
+    if(Number.isNaN(openingWydane) || Number.isNaN(openingZwrot)){ toast('Stan początkowy: wpisz liczbę całkowitą od 0 do 100 000', true); return; }
+    const dup = couriers.find(o=>o.id!==id && (o.name||'').trim().toLowerCase()===name.toLowerCase());
+    if(dup){ toast(`Nazwa „${dup.name}” jest już zajęta przez innego kuriera`, true); return; }
     try{ await db.collection('couriers').doc(id).update({name, color:selColor, enabled, openingWydane, openingZwrot}); toast('Zapisano zmiany'); }
     catch(err){ console.error(err); toast('Nie udało się zapisać zmian', true); }
     closeModal();
@@ -2527,7 +2611,7 @@ function confirmModal(title, msg, onConfirm, opts){
   document.querySelector('#modalRoot [data-action="close-modal"]').addEventListener('click', ()=>finish(false));
   document.getElementById('confirmBtn').addEventListener('click', ()=>finish(true));
   modalCancelHook = ()=>finish(false);
-  setTimeout(()=>{ const b = document.getElementById('confirmBtn'); if(b) b.focus(); }, 0);
+  setTimeout(()=>{ const b = document.getElementById('confirmBtn'); if(b) b.focus(); }, 1);
 }
 function confirmDialog(title, msg, opts){
   return new Promise(resolve=> confirmModal(title, msg, ()=>resolve(true), {...(opts||{}), onCancel:()=>resolve(false)}));
@@ -2568,12 +2652,12 @@ async function uploadCourierLogo(id, file){
   if(file.size > 4*1024*1024){ toast('Plik jest za duży (maks. 4 MB)', true); return; }
   try{
     const res = await assetsApi.upload(file);
-    await db.collection('couriers').doc(id).update({logoAssetId: res.id});
+    await db.collection('couriers').doc(id).update({logoAssetId: res.id, noLogo: false});
     toast('Logo zaktualizowane');
   }catch(e){ console.error(e); toast('Nie udało się przesłać logo', true); }
 }
 async function removeCourierLogo(id){
-  try{ await db.collection('couriers').doc(id).update({logoAssetId: null}); toast('Logo usunięte'); }
+  try{ await db.collection('couriers').doc(id).update({logoAssetId: null, noLogo: true}); toast('Logo usunięte — kurier ma teraz inicjały'); }
   catch(e){ console.error(e); toast('Nie udało się usunąć logo', true); }
 }
 async function saveTransaction(form){
@@ -2636,6 +2720,7 @@ async function saveTransaction(form){
   if(newCourier){
     try{ await db.collection('couriers').doc(newCourier.id).set(newCourier.data); }
     catch(e){ console.error(e); toast('Nie udało się dodać nowego kuriera', true); return false; }
+    if(!courierById(newCourier.id)) couriers = [...couriers, {id:newCourier.id, ...newCourier.data}];
   }
   const payload = {kurierId, kurierNazwa, typ, ilosc, data, uwagi};
   // an operation dated on/before the oldest day of the live window is not delivered by the live
@@ -2646,6 +2731,7 @@ async function saveTransaction(form){
     if(orig){
       if(orig.typ!==payload.typ) allocated = payload.nr = await allocDocket(payload.typ); // WZ ↔ PZ: new number of the right kind
       await db.collection('transactions').doc(editId).update(payload);
+      applyLocalTx(editId, {...orig, ...payload});
       keepOlder(editId, {...orig, ...payload});
       if(allocated) await ensureUniqueDocket(editId, allocated, payload.typ);
       toast('Operacja zaktualizowana'+(payload.nr? ` — nowy numer ${payload.nr}`:''));
@@ -2654,6 +2740,7 @@ async function saveTransaction(form){
       payload.createdAt = Date.now();
       allocated = payload.nr = await allocDocket(payload.typ);
       const ref = await db.collection('transactions').add(payload);
+      if(!(olderBoundary && payload.data <= olderBoundary)) applyLocalTx(ref.id, payload);
       keepOlder(ref.id, payload);
       const finalNr = await ensureUniqueDocket(ref.id, payload.nr, payload.typ);
       toast((payload.typ==='wydanie'? 'Zarejestrowano wydanie palet':'Zarejestrowano zwrot palet')+` (${finalNr})`);
@@ -2695,6 +2782,18 @@ function exportCsv(){
 }
 
 /* ---------------------------- EVENT BINDING ---------------------------- */
+// A date typed from the keyboard passes through values like 0002-09-15 while the year is entered;
+// applying (and re-rendering) on each of them would move the caret and garble the date. Apply only a
+// complete, plausible date (or an emptied field) — immediately, or when the field loses focus.
+function bindDateInput(input, apply){
+  if(!input) return;
+  let last = input.value;
+  const ok = (v)=> v==='' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && v>='2000-01-01' && v<='2099-12-31');
+  const go = ()=>{ const v = input.value; if(v===last || !ok(v)) return; last = v; apply(v); };
+  input.addEventListener('change', go);
+  input.addEventListener('blur', go);
+  input.addEventListener('keydown', (e)=>{ if(e.key==='Enter') go(); });
+}
 function bindViewEvents(){
   const main = document.getElementById('main');
 
@@ -2719,13 +2818,14 @@ function bindViewEvents(){
       if(orig && orig.kurierId===id) bal -= orig.typ==='wydanie' ? orig.ilosc : -orig.ilosc;
       const typ = (opForm.querySelector('input[name=typ]:checked')||{}).value;
       const q = /^\d+$/.test(qtyInput.value) ? parseInt(qtyInput.value,10) : 0;
-      let text = bal>0 ? `${c.name} ma obecnie u siebie ${palet(bal)}.` : bal<0 ? `${c.name}: bilans ${num(bal)} (zwrócono więcej, niż wydano).` : `${c.name} nie ma obecnie naszych palet.`;
+      let text = bal>0 ? `${c.name} ma obecnie u siebie ${paletAcc(bal)}.` : bal<0 ? `${c.name}: bilans ${num(bal)} (zwrócono więcej, niż wydano).` : `${c.name} nie ma obecnie naszych palet.`;
       let warn = false;
-      if(typ==='zwrot' && q>0 && q>bal){ text += ` Zwrot ${palet(q)} to więcej, niż kurier ma — sprawdź ilość.`; warn = true; }
+      if(typ==='zwrot' && q>0 && q>bal){ text += ` Zwrot (${num(q)} szt.) to więcej, niż kurier ma — sprawdź ilość.`; warn = true; }
       if(q>0) text += ` Po zapisaniu: ${num(bal + (typ==='wydanie' ? q : -q))}.`;
       hint.textContent = text; hint.classList.toggle('warn', warn);
     };
     sel.addEventListener('change', ()=>{ syncNewField(); updHint(); }); syncNewField(); updHint();
+    opFormHintUpdater = updHint;
     qtyInput.addEventListener('input', updHint);
     opForm.querySelectorAll('input[name=typ]').forEach(r=>r.addEventListener('change', updHint));
     opForm.querySelectorAll('[data-submit]').forEach(b=>b.addEventListener('click', ()=>{ lastSubmitAction = b.dataset.submit; }));
@@ -2751,11 +2851,11 @@ function bindViewEvents(){
   const fltQ = document.getElementById('fltQ');
   if(fltQ){
     let t;
-    fltQ.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(()=>{ historyFilters.q=fltQ.value; historyLimit=100; render(); },220); });
+    fltQ.addEventListener('input', ()=>{ historyFilters.q = fltQ.value; historyLimit = 100; clearTimeout(t); t = setTimeout(render, 220); });
     document.getElementById('fltKurier').addEventListener('change', (e)=>{ historyFilters.kurier=e.target.value; historyLimit=100; render(); });
     document.getElementById('fltTyp').addEventListener('change', (e)=>{ historyFilters.typ=e.target.value; historyLimit=100; render(); });
-    document.getElementById('fltFrom').addEventListener('change', (e)=>{ historyFilters.from=e.target.value; historyLimit=100; render(); });
-    document.getElementById('fltTo').addEventListener('change', (e)=>{ historyFilters.to=e.target.value; historyLimit=100; render(); });
+    bindDateInput(document.getElementById('fltFrom'), (v)=>{ historyFilters.from = v; historyLimit = 100; render(); });
+    bindDateInput(document.getElementById('fltTo'), (v)=>{ historyFilters.to = v; historyLimit = 100; render(); });
     const clearBtn = main.querySelector('[data-action="clear-filters"]');
     if(clearBtn) clearBtn.addEventListener('click', ()=>{ historyFilters={kurier:'all',typ:'all',from:'',to:'',q:''}; historyLimit=100; render(); });
     main.querySelectorAll('[data-hist-preset]').forEach(b=>b.addEventListener('click', ()=>{
@@ -2784,7 +2884,8 @@ function bindViewEvents(){
 
   // dashboard quick actions, printing
   main.querySelectorAll('[data-action="quick-op"]').forEach(b=>b.addEventListener('click', (e)=>{ e.stopPropagation(); openNewOpFor(b.dataset.id, b.dataset.typ); }));
-  main.querySelectorAll('.courier-card[data-action="open-courier"]').forEach(card=>card.addEventListener('keydown', (e)=>{ if((e.key==='Enter' || e.key===' ') && e.target===card){ e.preventDefault(); openCourierDetail(card.dataset.id); } }));
+  // non-button elements that behave like buttons respond to Enter / Space
+  main.querySelectorAll('[role="button"][tabindex]').forEach(el=>el.addEventListener('keydown', (e)=>{ if((e.key==='Enter' || e.key===' ') && e.target===el){ e.preventDefault(); el.click(); } }));
   main.querySelectorAll('[data-action="print-op"]').forEach(b=>b.addEventListener('click', (e)=>{ e.stopPropagation(); printOperation(b.dataset.id); }));
 
   // courier settlement statement
@@ -2795,7 +2896,7 @@ function bindViewEvents(){
   const stF = document.getElementById('stFrom'), stT = document.getElementById('stTo');
   if(stF && stT){
     const apply = ()=>{ stFrom = stF.value; stTo = stT.value; if(stFrom && stTo && stFrom>stTo){ const x = stFrom; stFrom = stTo; stTo = x; toast('Zamieniono daty — „od” było późniejsze niż „do”'); } render(); };
-    stF.addEventListener('change', apply); stT.addEventListener('change', apply);
+    bindDateInput(stF, apply); bindDateInput(stT, apply);
   }
   const stPrint = main.querySelector('[data-action="st-print"]');
   if(stPrint) stPrint.addEventListener('click', ()=>{

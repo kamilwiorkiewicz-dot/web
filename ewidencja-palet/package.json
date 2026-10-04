@@ -12,6 +12,7 @@
     "build": "node narzedzia/zbuduj.js",
     "check": "node narzedzia/zbuduj.js --sprawdz",
     "test": "node --test testy/test-zbuduj.js testy/test-serwer.js && node testy/test-przegladarka.js",
+    "test:zbuduj": "node --test testy/test-zbuduj.js",
     "test:serwer": "node --test testy/test-serwer.js",
     "test:przegladarka": "node testy/test-przegladarka.js"
   }
