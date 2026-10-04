@@ -557,10 +557,15 @@ test('błąd zapisu na dysk → 500, stan wycofany, brak zdarzenia SSE; potem za
     assert.match(s2.bledy(), /BŁĄD ZAPISU BAZY/);
     let s = await snapshot(s2.port);
     assert.deepEqual(s.collections.meta, { a: { v: 1 } }, 'nieudane zapisy nie mogą zostać w pamięci');
-    assert.equal(s.rev, ok.json.rev);
+    // numer zmian nie cofa się (klient mógł pobrać migawkę z wycofanymi zmianami) — wycofanie to nowy numer,
+    // a klienci dostają „reset” i wczytują stan od nowa
+    assert.ok(s.rev > ok.json.rev + 2, `rev po wycofaniu ${s.rev} musi być wyższy niż numery wycofanych zmian`);
+    const reset = await k.czekaj(z => z.event === 'reset');
+    assert.equal(reset.data.rev, s.rev);
+    assert.equal((await zadanie(s2.port, { path: '/api/rev' })).json.rev, s.rev, '/api/rev po wycofaniu');
     fs.rmdirSync(path.join(d, 'baza.json'));
     const r3 = await zapisz(s2.port, { op: 'set', coll: 'meta', id: 'c', data: { v: 4 } });
-    assert.equal(r3.status, 200); assert.equal(r3.json.rev, ok.json.rev + 1);
+    assert.equal(r3.status, 200); assert.equal(r3.json.rev, s.rev + 1);
     s = await snapshot(s2.port);
     assert.deepEqual(s.collections.meta, { a: { v: 1 }, c: { v: 4 } });
     await k.czekaj(z => z.event === 'change' && z.data.id === 'c');
@@ -649,4 +654,304 @@ test('zajęty port → czytelny błąd i kod wyjścia 1', async () => {
   try {
     await assert.rejects(uruchomSerwer({ dataDir: d, port }), /port \d+ jest zajęty/);
   } finally { blokada.close(); }
+});
+
+/* ======================================================================
+   Poprawki po QA wersji lokalnej
+   ====================================================================== */
+const { stworzSerwer, konfiguracja, dozwolonyHost, tekstStartowy } = require('../server.js');
+const spij = (ms) => new Promise((r) => setTimeout(r, ms));
+const basic = (haslo, user = 'u') => ({ Authorization: `Basic ${Buffer.from(`${user}:${haslo}`, 'utf8').toString('base64')}` });
+
+/** Serwer w tym samym procesie (testy podstawiają np. wolny dysk: baza.zapiszPlik). */
+async function serwerWProcesie(env = {}) {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const s = stworzSerwer(konfiguracja({ HOST: '127.0.0.1', PORT: '0', DATA_DIR: d, ...env }, []), { warn: () => {}, error: () => {} });
+  s.start();
+  await new Promise((r) => s.serwer.listen(0, '127.0.0.1', r));
+  return {
+    ...s, dir: d, port: s.serwer.address().port,
+    async zamknij() { s.zatrzymaj(); if (s.serwer.closeAllConnections) s.serwer.closeAllConnections(); await new Promise((r) => s.serwer.close(r)); },
+  };
+}
+
+test('GET /api/rev, „hello” i „ping” podają numer ostatniej zmiany zapisanej i rozesłanej', async () => {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const s2 = await uruchomSerwer({ dataDir: d, env: { EP_HEARTBEAT_MS: '150' } });
+  let k = null;
+  try {
+    let r = await zadanie(s2.port, { path: '/api/rev' });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.rev, 0);
+    assert.match(r.json.serverId, /^[a-z0-9]{12}$/);
+    const w = await zapisz(s2.port, { op: 'set', coll: 'meta', id: 'counters', data: { wz: 1 } });
+    r = await zadanie(s2.port, { path: '/api/rev' });
+    assert.equal(r.json.rev, w.json.rev);
+    k = await klientSse(s2.port);
+    const h = await k.czekaj((z) => z.event === 'hello');
+    assert.deepEqual(h.data, { rev: w.json.rev, serverId: r.json.serverId });
+    const p = await k.czekaj((z) => z.event === 'ping');
+    assert.equal(p.data.rev, w.json.rev);
+    assert.equal((await snapshot(s2.port)).serverId, r.json.serverId);
+    assert.equal((await zadanie(s2.port, { path: '/api/rev', method: 'POST' })).status, 405);
+  } finally { if (k) k.zamknij(); await s2.zatrzymaj(); }
+});
+
+test('SSE: paczka (batch) idzie jednym zdarzeniem „changes” (przeglądarka stosuje ją naraz), pojedynczy zapis — „change”', async () => {
+  const k = await klientSse(S.port);
+  try {
+    await k.czekaj((z) => z.event === 'hello');
+    const r = await jsonPost(S.port, '/api/batch', { writes: [
+      { op: 'set', coll: 'qa', id: 'p1', data: { a: 1 } }, { op: 'set', coll: 'qa', id: 'p2', data: { a: 2 } }, { op: 'delete', coll: 'qa', id: 'nie-ma' },
+    ], clientId: 'kp' });
+    const z = await k.czekaj((e) => e.event === 'changes');
+    assert.deepEqual(z.data, { clientId: 'kp', changes: r.json.results.map(({ rev, coll, id, data }) => ({ rev, coll, id, data })) });
+    assert.ok(!k.zdarzenia.some((e) => e.event === 'change' && e.data.coll === 'qa'));
+    await jsonPost(S.port, '/api/batch', { writes: [{ op: 'delete', coll: 'qa', id: 'p1' }] });
+    const jeden = await k.czekaj((e) => e.event === 'change' && e.data.id === 'p1');
+    assert.equal(jeden.data.data, null);
+    await jsonPost(S.port, '/api/write', { op: 'delete', coll: 'qa', id: 'p2' });
+  } finally { k.zamknij(); }
+});
+
+test('acquire: nowy posiadacz dostaje dzierżawę dopiero, gdy zapisy poprzedniego są na dysku i rozesłane (wolny dysk)', async () => {
+  const s = await serwerWProcesie();
+  const oryg = s.baza.zapiszPlik.bind(s.baza);
+  s.baza.zapiszPlik = async (t) => { await spij(1500); return oryg(t); }; // np. dysk NAS-a wybudzany ze snu
+  const k = await klientSse(s.port);
+  try {
+    await k.czekaj((z) => z.event === 'hello');
+    const acq = (holder) => jsonPost(s.port, '/api/acquire', { coll: 'meta', id: 'numeracja', holder, ttlMs: 1000 });
+    let r = await acq('A');
+    assert.equal(r.json.acquired, true);
+    assert.equal(r.json.serverId, (await zadanie(s.port, { path: '/api/rev' })).json.serverId);
+    // A zapisuje licznik; zapis na dysk trwa dłużej niż dzierżawa
+    const zapisA = jsonPost(s.port, '/api/write', { op: 'set', coll: 'meta', id: 'counters', data: { wz: 7 } });
+    await spij(1100); // dzierżawa A wygasła, zapis A jeszcze trwa
+    const pB = acq('B');
+    await spij(100);
+    const rC = await acq('C');
+    assert.equal(rC.json.acquired, false, 'w trakcie przekazywania dzierżawy B nikt inny jej nie dostaje');
+    const [rB, wA] = await Promise.all([pB, zapisA]);
+    assert.equal(wA.status, 200);
+    assert.equal(rB.json.acquired, true);
+    assert.ok(rB.json.rev >= wA.json.rev, `rev w odpowiedzi dla B (${rB.json.rev}) musi obejmować zapis A (${wA.json.rev})`);
+    assert.ok(s.revRozeslany() >= wA.json.rev);
+    assert.ok(Date.parse(rB.json.expiresAt) - Date.now() > 600, 'czas dzierżawy B liczy się od jej przyznania');
+    const zd = await k.czekaj((z) => z.event === 'change' && z.data.id === 'counters');
+    assert.deepEqual(zd.data.data, { wz: 7 });
+    // odnowienie przez tego samego posiadacza nie czeka na dysk
+    const t0 = Date.now();
+    const odn = jsonPost(s.port, '/api/write', { op: 'set', coll: 'meta', id: 'inny', data: { x: 1 } });
+    await spij(50);
+    r = await acq('B');
+    assert.equal(r.json.acquired, true);
+    assert.ok(Date.now() - t0 < 1000, 'odnowienie bez czekania na zapisy');
+    await odn;
+  } finally { k.zamknij(); await s.zamknij(); }
+});
+
+test('nagłówek Host: localhost, adresy IP, nazwy lokalne i EP_HOSTY — tak; obca domena (DNS rebinding) — 403', async () => {
+  const dobre = ['localhost', 'localhost:8080', '127.0.0.1:8080', '192.168.1.20', '[::1]:8080', '[fe80::1]', 'nas', 'DiskStation:5000',
+    'nas.local', 'NAS.Local.', 'serwer.lan:8080', 'nas.home.arpa', 'app.localhost', 'nas.internal'];
+  const zle = ['rebind.attacker.example', 'rebind.attacker.example:8080', 'evil.com', '127.0.0.1.nip.io', 'localhost.evil.com', '', ' ',
+    'a b', 'nas.local@evil.com', '[::1', 'xn--80ak6aa92e.com'];
+  for (const h of dobre) assert.ok(dozwolonyHost(h, []), `powinno być dozwolone: ${h}`);
+  for (const h of zle) assert.ok(!dozwolonyHost(h, []), `powinno być odrzucone: ${JSON.stringify(h)}`);
+  assert.ok(dozwolonyHost(undefined, []), 'HTTP/1.0 bez nagłówka Host');
+  const hosty = konfiguracja({ EP_HOSTY: ' Palety.Example.pl:443 , *.moj-nas.pl,https://inna.example.pl/ ' }, []).hosty;
+  assert.deepEqual(hosty, ['palety.example.pl', '*.moj-nas.pl', 'inna.example.pl']);
+  assert.ok(dozwolonyHost('PALETY.example.pl:8443', hosty));
+  assert.ok(dozwolonyHost('nas.moj-nas.pl', hosty));
+  assert.ok(!dozwolonyHost('moj-nas.pl.evil.com', hosty));
+  assert.ok(dozwolonyHost('cokolwiek.example', ['*']), 'EP_HOSTY=* wyłącza kontrolę');
+
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const s2 = await uruchomSerwer({ dataDir: d, env: { EP_HOSTY: 'palety.example.pl,*.moj-nas.pl' } });
+  try {
+    for (const [host, oczek] of [['rebind.attacker.example:8080', 403], ['palety.example.pl', 200], ['nas.moj-nas.pl:443', 200], ['nas', 200], ['nas.local:8080', 200]]) {
+      for (const p of ['/', '/api/kopia', '/api/ping', '/api/snapshot']) {
+        const r = await zadanie(s2.port, { path: p, headers: { Host: host } });
+        assert.equal(r.status, oczek, `Host: ${host} ${p}`);
+        if (oczek === 403) { assert.match(r.text, /EP_HOSTY/); assert.ok(!r.text.includes('"collections"')); }
+      }
+    }
+    const w = await jsonPost(s2.port, '/api/write', { op: 'set', coll: 'x', id: 'y', data: {} }, { Host: 'rebind.attacker.example' });
+    assert.equal(w.status, 403);
+    assert.deepEqual((await snapshot(s2.port)).collections, {}, 'zapis spod obcej nazwy nie przeszedł');
+    assert.match(s2.bledy(), /Odrzucono żądanie z nieznaną nazwą serwera \(Host: rebind\.attacker\.example:8080\)/);
+  } finally { await s2.zatrzymaj(); }
+});
+
+test('X-Frame-Options: DENY i CSP frame-ancestors \'none\' — aplikacji nie da się osadzić w ramce', async () => {
+  for (const p of ['/', '/index.html', '/api/ping', '/runtime-lokalny.js', '/nie-ma']) {
+    const r = await zadanie(S.port, { path: p });
+    assert.equal(r.headers['x-frame-options'], 'DENY', p);
+    assert.match(r.headers['content-security-policy'], /frame-ancestors 'none'/, p);
+  }
+  const up = await zadanie(S.port, { method: 'POST', path: '/api/assets', body: PNG_1X1, headers: { 'Content-Type': 'image/png', 'Content-Length': PNG_1X1.length } });
+  const b = await zadanie(S.port, { path: up.json.url });
+  assert.equal(b.status, 200);
+  assert.match(b.headers['content-security-policy'], /sandbox/);
+  assert.match(b.headers['content-security-policy'], /frame-ancestors 'none'/);
+  await zadanie(S.port, { method: 'DELETE', path: `/api/assets/${up.json.id}` });
+});
+
+test('EP_HASLO: po 5 błędnych hasłach z jednego adresu kolejne próby są wstrzymywane (429), coraz dłużej', async () => {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const s2 = await uruchomSerwer({ dataDir: d, env: { EP_HASLO: 'tajne', EP_BLOKADA_HASLA_MS: '800' } });
+  const st = async (h) => (await zadanie(s2.port, { path: '/', headers: h || {} }));
+  try {
+    for (let i = 0; i < 8; i++) assert.equal((await st()).status, 401, 'pierwsze wejście bez hasła się nie liczy');
+    for (let i = 0; i < 4; i++) assert.equal((await st(basic('zle'))).status, 401);
+    assert.equal((await st(basic('tajne'))).status, 200, 'poprawne hasło kasuje licznik');
+    for (let i = 0; i < 5; i++) assert.equal((await st(basic(`zle${i}`))).status, 401);
+    let r = await st(basic('tajne'));
+    assert.equal(r.status, 429, 'w czasie blokady hasło nie jest nawet sprawdzane');
+    assert.ok(Number(r.headers['retry-after']) >= 1);
+    assert.equal(r.headers['www-authenticate'], undefined);
+    assert.match(r.text, /Za dużo błędnych haseł.*Spróbuj ponownie za \d+ s/);
+    assert.equal((await st()).status, 401, 'bez hasła: zwykłe pytanie o hasło');
+    await spij(900);
+    assert.equal((await st(basic('zle'))).status, 401); // szósta pomyłka → blokada 1,6 s
+    assert.equal((await st(basic('tajne'))).status, 429);
+    await spij(1000);
+    assert.equal((await st(basic('tajne'))).status, 429, 'druga blokada dwa razy dłuższa');
+    await spij(800);
+    assert.equal((await st(basic('tajne'))).status, 200);
+    assert.equal((await st(basic('zle'))).status, 401, 'po poprawnym haśle licznik od zera');
+    assert.match(s2.bledy(), /błędnych haseł z adresu/);
+  } finally { await s2.zatrzymaj(); }
+});
+
+test('błędne kodowanie „%” albo „//” w adresie → 400 (nigdy 500 ani stos w logu)', async () => {
+  const przed = S.bledy().length;
+  for (const [method, p] of [['GET', '/_blob/%'], ['GET', '/_blob/%E0%A4%A'], ['DELETE', '/api/assets/%E0%A4%A'], ['DELETE', '/api/assets/%'],
+    ['GET', '/%ff'], ['GET', '/%'], ['GET', '/fonts/%zz.css'], ['GET', '//index.html'], ['GET', '//etc/passwd']]) {
+    const r = await zadanie(S.port, { method, path: p });
+    assert.equal(r.status, 400, `${method} ${p}`);
+  }
+  assert.doesNotMatch(S.bledy().slice(przed), /Błąd obsługi|URIError/);
+});
+
+test('/index.html/ → przekierowanie na stronę główną; ukośnik na końcu albo pusty segment w innych ścieżkach → 404', async () => {
+  const r = await zadanie(S.port, { path: '/index.html/' });
+  assert.equal(r.status, 301);
+  assert.equal(new URL(r.headers.location, `http://h:1/index.html/`).pathname, '/');
+  assert.equal(new URL(r.headers.location, `http://h:1/palety/index.html/`).pathname, '/palety/', 'względne — działa też za odwrotnym proxy');
+  for (const p of ['/index.html/x', '/index.html//', '/fonts//fonts.css', '/runtime-lokalny.js/', '/fonts/fonts.css/', '/index.html;x']) {
+    assert.equal((await zadanie(S.port, { path: p })).status, 404, p);
+  }
+});
+
+test('baza.json ze znakiem BOM i końcami linii CRLF (Notatnik) jest czytana normalnie, bez „odtwarzania z kopii”', async () => {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  let s2 = await uruchomSerwer({ dataDir: d });
+  await zapisz(s2.port, { op: 'set', coll: 'transactions', id: 't1', data: { ilosc: 1 } });
+  await zapisz(s2.port, { op: 'set', coll: 'transactions', id: 't2', data: { ilosc: 2 } });
+  await s2.zatrzymaj();
+  const plik = path.join(d, 'baza.json');
+  fs.writeFileSync(plik, '\uFEFF' + fs.readFileSync(plik, 'utf8').replace(/\n/g, '\r\n'));
+  s2 = await uruchomSerwer({ dataDir: d });
+  try {
+    const s = await snapshot(s2.port);
+    assert.deepEqual(Object.keys(s.collections.transactions).sort(), ['t1', 't2']);
+    assert.deepEqual(fs.readdirSync(d).filter((f) => f.startsWith('baza.uszkodzona')), []);
+    assert.equal((await zadanie(s2.port, { path: '/api/ping' })).json.odtworzenie, undefined);
+    assert.doesNotMatch(s2.bledy(), /USZKODZONY/);
+  } finally { await s2.zatrzymaj(); }
+});
+
+test('odtworzenie bazy przy starcie: informacja w /api/ping i /api/snapshot (dla aplikacji), także po kolejnym starcie', async () => {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  let s2 = await uruchomSerwer({ dataDir: d });
+  await zapisz(s2.port, { op: 'set', coll: 'transactions', id: 't1', data: { ilosc: 1 } });
+  await zapisz(s2.port, { op: 'set', coll: 'transactions', id: 't2', data: { ilosc: 2 } }); // kopia dzienna = stan sprzed tej zmiany
+  await s2.zatrzymaj();
+  const plik = path.join(d, 'baza.json');
+  fs.writeFileSync(plik, '{"collections": {"transactions": ');
+  s2 = await uruchomSerwer({ dataDir: d });
+  let info;
+  try {
+    info = (await zadanie(s2.port, { path: '/api/ping' })).json.odtworzenie;
+    assert.ok(info, 'ping zawiera informację o odtworzeniu');
+    assert.match(info.zKopii, new RegExp(`^baza-${dzis}\\.json$`));
+    assert.match(info.odlozony, /^baza\.uszkodzona-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json$/);
+    assert.ok(fs.existsSync(path.join(d, info.odlozony)));
+    assert.equal(info.pusta, false); assert.equal(info.brakPliku, false);
+    assert.ok(Date.now() - Date.parse(info.kiedy) < 60000);
+    const s = await snapshot(s2.port);
+    assert.deepEqual(s.odtworzenie, info);
+    assert.deepEqual(Object.keys(s.collections.transactions), ['t1'], 'stan z kopii (z początku dnia)');
+  } finally { await s2.zatrzymaj(); }
+  // zwykły ponowny start: ta sama informacja (aplikacja pokaże ją raz na urządzeniu)
+  s2 = await uruchomSerwer({ dataDir: d });
+  try { assert.deepEqual((await zadanie(s2.port, { path: '/api/ping' })).json.odtworzenie, info); } finally { await s2.zatrzymaj(); }
+  // po 30 dniach ślad znika
+  const znak = path.join(d, 'odtworzenie.json');
+  fs.writeFileSync(znak, JSON.stringify({ ...info, kiedy: new Date(Date.now() - 31 * 24 * 3600 * 1000).toISOString() }));
+  s2 = await uruchomSerwer({ dataDir: d });
+  try {
+    assert.equal((await zadanie(s2.port, { path: '/api/ping' })).json.odtworzenie, undefined);
+    assert.ok(!fs.existsSync(znak));
+  } finally { await s2.zatrzymaj(); }
+  // brak baza.json, ale są kopie → pusta baza i informacja „brakPliku”
+  fs.unlinkSync(plik);
+  s2 = await uruchomSerwer({ dataDir: d });
+  try {
+    const i2 = (await zadanie(s2.port, { path: '/api/ping' })).json.odtworzenie;
+    assert.equal(i2.brakPliku, true); assert.equal(i2.pusta, true); assert.notEqual(i2.id, info.id);
+  } finally { await s2.zatrzymaj(); }
+  // baza.json jako folder → czytelny błąd po polsku
+  fs.rmSync(plik, { force: true }); fs.mkdirSync(plik);
+  await assert.rejects(uruchomSerwer({ dataDir: d }), /baza\.json jest folderem/);
+});
+
+test('w kontenerze (EP_DOCKER=1): bez wewnętrznego adresu Dockera i bez „Ctrl+C”, ze wskazówką: adres NAS-a i port z docker-compose.yml', async () => {
+  const lan = [{ nazwa: 'eth0', adres: '172.18.0.2' }];
+  const t = tekstStartowy(konfiguracja({ EP_DOCKER: '1', DATA_DIR: '/app/dane' }, []), 8080, lan);
+  assert.doesNotMatch(t, /172\.18\.0\.2|localhost|Ctrl\+C|zamknij to okno/);
+  assert.match(t, /http:\/\/ADRES-NAS:PORT/);
+  assert.match(t, /PRZED dwukropkiem w docker-compose\.yml → ports/);
+  assert.match(t, /Container Manager → Projekt → Zatrzymaj/);
+  const t2 = tekstStartowy(konfiguracja({ EP_DOCKER: '0', HOST: '0.0.0.0' }, []), 8080, [{ nazwa: 'en0', adres: '192.168.1.20' }]);
+  assert.match(t2, /W sieci lokalnej:\s+http:\/\/192\.168\.1\.20:8080/);
+  assert.match(t2, /Ctrl\+C/);
+  assert.equal(konfiguracja({ EP_DOCKER: '1' }, []).docker, true);
+  assert.equal(konfiguracja({ EP_DOCKER: '0' }, []).docker, false);
+  // prawdziwy proces z EP_DOCKER=1
+  const { spawn } = require('child_process');
+  const { wolnyPort } = require('./pomocnicy-serwera');
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const port = await wolnyPort();
+  const proc = spawn(process.execPath, [path.join(KATALOG, 'server.js'), '--otworz'], { env: { ...process.env, PORT: String(port), HOST: '0.0.0.0', DATA_DIR: d, EP_DOCKER: '1', EP_HASLO: '', PATH: '/nie-ma' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = ''; proc.stdout.on('data', (c) => { out += c; });
+  try {
+    const koniec = Date.now() + 10000;
+    while (!out.includes('Zatrzymanie:') && Date.now() < koniec) await spij(50);
+    assert.match(out, /serwer lokalny działa \(w kontenerze Docker\)/);
+    assert.doesNotMatch(out, /W sieci lokalnej|Ctrl\+C/);
+    assert.equal((await zadanie(port, { path: '/api/ping' })).status, 200);
+  } finally { proc.kill('SIGTERM'); await new Promise((r) => proc.on('exit', r)); }
+});
+
+test('EP_HASLO_PLIK: hasło z pliku (BOM, CRLF, znaki $ # \' i spacje), kontrola zdrowia też; brak pliku → czytelny błąd', async () => {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const plik = path.join(d, 'haslo.txt');
+  const haslo = "Za$$ż #1 it's ";
+  fs.writeFileSync(plik, `\uFEFF${haslo}\r\ndruga linia jest pomijana\r\n`);
+  const cfg = konfiguracja({ EP_HASLO_PLIK: plik, EP_HASLO: 'ignorowane' }, []);
+  assert.equal(cfg.haslo, haslo);
+  const s2 = await uruchomSerwer({ dataDir: d, env: { EP_HASLO_PLIK: plik } });
+  try {
+    assert.equal((await zadanie(s2.port, { path: '/api/ping', headers: basic(haslo) })).status, 200);
+    for (const zle of ['Za$ż #1 it\'s ', 'Za$$ż', haslo.trim(), `\uFEFF${haslo}`]) assert.equal((await zadanie(s2.port, { path: '/api/ping', headers: basic(zle) })).status, 401, JSON.stringify(zle));
+    const { spawnSync } = require('child_process');
+    const zdrowie = (env) => spawnSync(process.execPath, [path.join(KATALOG, 'narzedzia', 'kontrola-zdrowia.js')], { env: { ...process.env, EP_HASLO: '', PORT: String(s2.port), ...env }, timeout: 10000 }).status;
+    assert.equal(zdrowie({ EP_HASLO_PLIK: plik }), 0);
+    assert.equal(zdrowie({ EP_HASLO_PLIK: path.join(d, 'nie-ma.txt') }), 1);
+  } finally { await s2.zatrzymaj(); }
+  await assert.rejects(uruchomSerwer({ dataDir: d, env: { EP_HASLO_PLIK: path.join(d, 'nie-ma.txt') } }), /nie można odczytać pliku z hasłem EP_HASLO_PLIK/);
+  fs.writeFileSync(plik, '\r\n');
+  await assert.rejects(uruchomSerwer({ dataDir: d, env: { EP_HASLO_PLIK: plik } }), /jest pusty/);
 });

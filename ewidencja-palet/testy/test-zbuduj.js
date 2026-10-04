@@ -47,10 +47,12 @@ test('prawdziwe źródło: dokładnie dwie zmiany, odwracalne bajt w bajt', () =
   assert.equal(Buffer.byteLength(src) - Buffer.byteLength(out), Buffer.byteLength(blok) - Buffer.byteLength(LINK_CZCIONEK) - Buffer.byteLength(ZNACZNIK_RUNTIME + '\n'));
 });
 
-test('index.html jest aktualny względem zrodlo/aplikacja.html (node narzedzia/zbuduj.js --sprawdz)', () => {
-  const r = uruchom(['--sprawdz']);
-  assert.equal(r.status, 0, `index.html nieaktualny — uruchom: node narzedzia/zbuduj.js\n${r.stderr}`);
-  assert.equal(czytaj('index.html'), zbuduj(fs.readFileSync(ZRODLO, 'utf8')));
+// EP_ZRODLO=testy/baseline-v3.html — index.html zbudowany z innej (np. zamrożonej) wersji aplikacji, jak w test-przegladarka.js
+const ZRODLO_INDEXU = process.env.EP_ZRODLO ? path.resolve(process.env.EP_ZRODLO) : ZRODLO;
+test(`index.html jest aktualny względem ${path.relative(KATALOG, ZRODLO_INDEXU)} (node narzedzia/zbuduj.js --sprawdz)`, () => {
+  const r = uruchom(['--sprawdz', '--zrodlo', ZRODLO_INDEXU]);
+  assert.equal(r.status, 0, `index.html nieaktualny — uruchom: node narzedzia/zbuduj.js${process.env.EP_ZRODLO ? ` --zrodlo ${process.env.EP_ZRODLO}` : ''}\n${r.stderr}`);
+  assert.equal(czytaj('index.html'), zbuduj(fs.readFileSync(ZRODLO_INDEXU, 'utf8')));
 });
 
 test('małe źródło: LF i CRLF zachowane, wynik przechodzi weryfikację', () => {
@@ -181,8 +183,71 @@ test('Docker: node:22-alpine, użytkownik bez roota, wolumen /app/dane, HEALTHCH
   assert.match(dc, /- \.\/dane:\/app\/dane/);
   assert.match(dc, /restart: unless-stopped/);
   assert.match(dc, /TZ=Europe\/Warsaw/);
-  assert.match(dc, /^\s*# - EP_HASLO=/m, 'EP_HASLO zakomentowane');
+  assert.match(dc, /^\s*# - 'EP_HASLO=[^']*'$/m, 'EP_HASLO zakomentowane, w apostrofach');
+  assert.match(dc, /^\s*# - EP_HASLO_PLIK=\/app\/dane\/haslo\.txt$/m, 'hasło z pliku w folderze danych (zamontowanym w /app/dane)');
+  assert.match(dc, /każdy znak \$ wpisz PODWÓJNIE \(\$\$\)/, 'komentarz ostrzega przed $ w haśle');
+  assert.match(dc, /obcina hasło od „ #”/, 'komentarz ostrzega przed # w haśle');
+  assert.ok(!/^\s*- EP_HASLO/m.test(dc), 'hasło domyślnie wyłączone');
   assert.match(dc, /EP_UZYTKOWNIK=auto/);
+  assert.match(df, /EP_DOCKER=1/, 'serwer wie, że działa w kontenerze');
+});
+
+// docker compose (bez demona): przykład hasła z komentarza przechodzi bez obcięcia i bez podmiany $
+const compose = spawnSync('docker', ['compose', 'version'], { encoding: 'utf8' });
+test('docker-compose.yml: hasło z $ i # w zapisie z komentarza dociera do kontenera bez zmian (docker compose config)', { skip: (compose.error || compose.status !== 0) && 'brak docker compose' }, () => {
+  const d = tmp();
+  try {
+    const dc = czytaj('docker-compose.yml');
+    const przyklad = /^(\s*)# (- 'EP_HASLO=[^']*')$/m.exec(dc);
+    assert.ok(przyklad, 'przykład EP_HASLO w komentarzu');
+    const plikHasla = /^(\s*)# (- EP_HASLO_PLIK=\S+)$/m.exec(dc);
+    const warianty = {
+      B: dc.replace(przyklad[0], przyklad[1] + przyklad[2]),
+      A: dc.replace(plikHasla[0], plikHasla[1] + plikHasla[2]),
+      zle: dc.replace(przyklad[0], `${przyklad[1]}- EP_HASLO=Ab$12 #x`),
+    };
+    const env = {};
+    for (const [n, tresc] of Object.entries(warianty)) {
+      fs.writeFileSync(path.join(d, 'docker-compose.yml'), tresc);
+      const r = spawnSync('docker', ['compose', '-f', path.join(d, 'docker-compose.yml'), 'config', '--format', 'json'], { encoding: 'utf8', cwd: d });
+      assert.equal(r.status, 0, r.stderr);
+      env[n] = JSON.parse(r.stdout).services['ewidencja-palet'].environment;
+    }
+    // w postaci kanonicznej compose zapisuje $ jako $$ — w kontenerze to jeden znak $: „Ab$12 #x”
+    assert.equal(env.B.EP_HASLO, 'Ab$$12 #x');
+    assert.equal(env.A.EP_HASLO_PLIK, '/app/dane/haslo.txt');
+    assert.equal(env.A.EP_HASLO, undefined);
+    assert.notEqual(env.zle.EP_HASLO, 'Ab$$12 #x', 'bez apostrofów hasło jest psute — dlatego komentarz każe użyć apostrofów');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('programy uruchamiające bez reszty folderu (np. prosto z ZIP): komunikat po polsku zamiast błędu Node', { skip: process.platform === 'win32' && 'test dla Linuksa/macOS' }, () => {
+  const d = tmp();
+  try {
+    for (const [f, powloka, wzor] of [['Uruchom serwer (Mac).command', 'bash', /rozpakuj CAŁE archiwum \(dwuklik na pliku \.zip w Finderze\)/], ['uruchom.sh', 'sh', /Rozpakuj CAŁE archiwum/]]) {
+      fs.copyFileSync(path.join(KATALOG, f), path.join(d, f));
+      const r = spawnSync(powloka, [path.join(d, f)], { encoding: 'utf8', input: '\n', timeout: 20000 });
+      const out = r.stdout + r.stderr;
+      assert.equal(r.status, 1, `${f}: kod wyjścia\n${out}`);
+      assert.match(out, /Brakuje plików aplikacji obok tego skryptu \(nie ma: server\.js\)/, f);
+      assert.match(out, wzor, f);
+      assert.doesNotMatch(out, /MODULE_NOT_FOUND|Cannot find module|at Module/, f);
+    }
+    // pełny folder bez index.html i bez narzedzia/ (np. częściowo rozpakowany) — też komunikat, nie stos
+    for (const p of ['server.js', 'runtime-lokalny.js']) fs.copyFileSync(path.join(KATALOG, p), path.join(d, p));
+    fs.mkdirSync(path.join(d, 'fonts')); fs.copyFileSync(path.join(KATALOG, 'fonts', 'fonts.css'), path.join(d, 'fonts', 'fonts.css'));
+    const r = spawnSync('sh', [path.join(d, 'uruchom.sh')], { encoding: 'utf8', timeout: 20000 });
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /nie ma: index\.html/);
+    assert.doesNotMatch(r.stdout + r.stderr, /MODULE_NOT_FOUND/);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+  // Windows: ta sama kontrola w .bat (uruchomienie z ZIP wypakowuje tylko ten jeden plik do %TEMP%)
+  const bat = fs.readFileSync(path.join(KATALOG, 'Uruchom serwer (Windows).bat'), 'latin1');
+  for (const p of ['server.js', 'runtime-lokalny.js', 'fonts\\fonts.css']) assert.ok(bat.includes(`if not exist "${p}" set "BRAK=`), `.bat sprawdza ${p}`);
+  assert.match(bat, /if not exist "index\.html" if not exist "narzedzia\\zbuduj\.js" set "BRAK=index\.html"/);
+  assert.match(bat, /"Wyodrebnij wszystkie\.\.\."/);
+  assert.match(bat, /find \/i "\.zip"/);
+  assert.ok(bat.indexOf('goto brak_plikow') < bat.indexOf('where node'), '.bat najpierw sprawdza pliki, potem Node.js');
 });
 
 test('package.json: skrypty wskazują istniejące pliki, brak zależności', () => {

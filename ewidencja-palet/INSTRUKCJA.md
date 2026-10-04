@@ -18,6 +18,8 @@ To jest ta sama aplikacja co wersja online w Claude: ta sama wersja, ten sam wyg
 | `zrodlo/aplikacja.html` | Aplikacja dokładnie w wersji online (z niej powstaje `index.html`). |
 | `narzedzia/`, `testy/`, `package.json` | Dla programisty: budowanie `index.html` i testy. Do codziennej pracy niepotrzebne. |
 
+**Najpierw rozpakuj całe archiwum** (Windows: prawy przycisk na pliku `.zip` → **Wyodrębnij wszystkie…** → **Wyodrębnij**; Mac: dwuklik na pliku `.zip`). Nie uruchamiaj plików prosto z okna archiwum — wtedy wypakowuje się tylko jeden plik i aplikacja nie zadziała.
+
 ## Sposób 1 — najprostszy: dwuklik w `index.html`
 
 1. Otwórz `index.html` — najlepiej w **Chrome** albo **Edge** (w tych przeglądarkach wersja lokalna jest sprawdzona; Safari i Firefox powinny działać, ale nie były testowane).
@@ -31,61 +33,99 @@ Dobrze wiedzieć:
 
 ## Sposób 2 — zalecany: serwer na komputerze (dane w pliku, dostęp z telefonu)
 
-Potrzebny jest darmowy program **Node.js** (wersja LTS) ze strony https://nodejs.org — instaluje się jak każdy inny program.
+Potrzebny jest darmowy program **Node.js** (wersja LTS) ze strony https://nodejs.org — instaluje się jak każdy inny program. Jeśli go brakuje, okno serwera to powie i otworzy tę stronę.
 
-**Windows:** dwuklik w `Uruchom serwer (Windows).bat`.
+**Windows:**
+1. Rozpakuj archiwum (patrz wyżej) i otwórz rozpakowany folder.
+2. Kliknij dwukrotnie `Uruchom serwer (Windows).bat`.
+3. Przy pierwszym uruchomieniu Windows może ostrzec przed plikiem pobranym z internetu:
+   - niebieskie okno **„System Windows ochronił ten komputer”**: kliknij **Więcej informacji**, a potem **Uruchom mimo to**;
+   - okno **„Otwieranie pliku — ostrzeżenie o zabezpieczeniach”**: kliknij **Uruchom**.
+4. Przy pierwszym starcie serwera Zapora Windows Defender zapyta o program Node.js. Zaznacz **Sieci prywatne** i kliknij **Zezwalaj na dostęp**. Bez tego telefony i inne komputery nie połączą się z serwerem.
 
-**Mac:** dwuklik w `Uruchom serwer (Mac).command`. Przy pierwszym uruchomieniu macOS zablokuje plik pobrany z internetu:
-1. Kliknij **Gotowe** w komunikacie.
-2. Otwórz **Ustawienia systemowe → Prywatność i ochrona**, przewiń w dół i przy komunikacie o pliku „Uruchom serwer (Mac).command” kliknij **Otwórz mimo to**, potem potwierdź hasłem.
-3. Uruchom plik jeszcze raz dwuklikiem. Później już nie trzeba tego powtarzać.
+**Mac:**
+1. Rozpakuj archiwum (dwuklik na pliku `.zip` w Finderze) i otwórz rozpakowany folder.
+2. Kliknij dwukrotnie `Uruchom serwer (Mac).command`. Przy pierwszym uruchomieniu macOS zablokuje plik pobrany z internetu:
+   1. W komunikacie kliknij **Gotowe**.
+   2. Otwórz **Ustawienia systemowe → Prywatność i ochrona** i przewiń w dół. Przy komunikacie o pliku „Uruchom serwer (Mac).command” kliknij **Otwórz mimo to** i potwierdź hasłem (albo Touch ID).
+   3. Uruchom plik jeszcze raz dwuklikiem. Pojawi się jeszcze jedno okno z pytaniem, czy otworzyć plik: kliknij **Otwórz mimo to** (w starszych wersjach macOS: **Otwórz**). Później już nie trzeba tego powtarzać.
+3. Jeśli folder aplikacji leży w **Pobranych**, na **Biurku** albo w **Dokumentach**, macOS zapyta, czy „Terminal” może mieć dostęp do plików w tym folderze. Kliknij **Pozwól**. Po kliknięciu **Nie pozwalaj** serwer zakończy się komunikatem „brak uprawnień do zapisu w folderze danych” — naprawisz to w **Ustawienia systemowe → Prywatność i ochrona → Pliki i foldery → Terminal** albo przenosząc folder aplikacji do swojego folderu domowego.
+4. Jeśli Mac pisze, że plik „nie może zostać otwarty, bo brak uprawnień” (zdarza się po rozpakowaniu niektórymi programami), otwórz Terminal, wpisz `chmod +x ` (ze spacją na końcu), przeciągnij plik do okna Terminala i naciśnij Enter.
+5. Skrypt otwiera aplikację w domyślnej przeglądarce, na Macu zwykle w Safari. Wersja lokalna jest sprawdzana w Chrome i Edge — jeśli w Safari coś działa nie tak, skopiuj adres `http://localhost:8080` do Chrome.
 
-Jeśli Mac pisze, że plik „nie może zostać otwarty, bo brak uprawnień” (zdarza się po rozpakowaniu niektórymi programami), otwórz Terminal, wpisz `chmod +x ` (ze spacją na końcu), przeciągnij plik do okna Terminala i naciśnij Enter.
-
-Po uruchomieniu otworzy się okno z serwerem i przeglądarka z adresem http://localhost:8080. W oknie serwera widać też adres do wpisania na telefonie albo innym komputerze w tej samej sieci Wi-Fi (np. `http://192.168.1.20:8080`). Jeśli Node.js nie jest zainstalowany, okno to powie i otworzy stronę nodejs.org.
+Po uruchomieniu otworzy się okno z serwerem i przeglądarka z adresem http://localhost:8080. W oknie serwera widać też adres do wpisania na telefonie albo innym komputerze w tej samej sieci Wi-Fi (np. `http://192.168.1.20:8080`).
 
 - Dane są w folderze `dane/` obok aplikacji: `baza.json` (ewidencja), `zalaczniki/` (logo kurierów), `kopie/` (kopie zapasowe).
 - Zmiany widać od razu na wszystkich otwartych urządzeniach.
 - Okno serwera musi być otwarte, dopóki korzystasz z aplikacji. Zamknięcie okna zatrzymuje serwer — dane zostają w pliku.
-- Gdy serwer jest wyłączony albo komputer uśpiony, na górze aplikacji pojawia się pasek **„Brak połączenia z serwerem — zmiany nie są zapisywane”** (z pomarańczowym znacznikiem). Po ponownym uruchomieniu serwera strona połączy się sama.
+- Gdy serwer jest wyłączony albo komputer uśpiony, na górze aplikacji pojawia się pasek **„Brak połączenia z serwerem — zmiany nie są zapisywane”** (z pomarańczowym znacznikiem). Pasek znika sam, gdy tylko serwer znowu odpowie; strona łączy się ponownie automatycznie, także po zmianie sieci Wi-Fi i po wybudzeniu telefonu. Zmian, które próbowano zapisać, gdy pasek był widoczny, nie zapisano — wprowadź je jeszcze raz.
 
-**Inny port** (gdy 8080 jest zajęty) — uruchom serwer ręcznie w oknie terminala, w folderze aplikacji:
-- Mac / Linux: `PORT=8090 node server.js`
-- Windows (Wiersz polecenia): najpierw `set PORT=8090`, potem `node server.js`
+**Inny port** (gdy 8080 jest zajęty):
+- **Windows, bez wpisywania poleceń:** kliknij `Uruchom serwer (Windows).bat` prawym przyciskiem myszy → **Edytuj** (w Windows 11: **Pokaż więcej opcji → Edytuj**). W Notatniku znajdź linię `if not defined PORT set "PORT=8080"`, zmień `8080` np. na `8090`, zapisz i zamknij. Potem uruchom plik jak zwykle.
+- **Mac, bez wpisywania poleceń:** kliknij `Uruchom serwer (Mac).command` prawym przyciskiem → **Otwórz za pomocą → TextEdit**. Znajdź linię `export PORT="${PORT:-8080}"`, zmień `8080` np. na `8090`, zapisz (⌘S) i zamknij. Potem uruchom plik jak zwykle.
+- **Z terminala**, w folderze aplikacji:
+  - Mac: w Finderze kliknij folder aplikacji prawym przyciskiem → **Usługi → Nowy terminal w folderze** (jeśli tej opcji nie ma: otwórz Terminal, wpisz `cd ` ze spacją, przeciągnij folder do okna i naciśnij Enter). Potem wpisz `PORT=8090 node server.js`.
+  - Windows: otwórz folder aplikacji w Eksploratorze, kliknij pasek adresu, wpisz `cmd` i naciśnij Enter. Potem wpisz `set PORT=8090`, a następnie `node server.js`.
+
+Adres aplikacji zmieni się wtedy na `http://localhost:8090` (na telefonie to ten sam adres co wcześniej, tylko z `:8090` na końcu).
 
 ## Sposób 3 — Synology NAS (Container Manager, DSM 7)
 
-1. W **File Station** utwórz folder, np. `docker/ewidencja-palet`, i wgraj do niego całą zawartość tego folderu.
-2. Otwórz **Container Manager → Projekt → Utwórz**.
-3. Nazwa: `ewidencja-palet`, ścieżka: wybrany folder, źródło: **Użyj istniejącego docker-compose.yml**.
-4. Kliknij **Dalej → Gotowe**. Przy pierwszym uruchomieniu NAS pobiera z internetu podstawowy obraz (Node.js), więc musi mieć dostęp do sieci. Potem kontener uruchamia się sam, także po restarcie NAS-a.
-5. Wejdź na `http://ADRES-NAS:8080` z dowolnego urządzenia w sieci.
+Warunki:
+- Pakiet **Container Manager** z **Centrum pakietów** (w DSM 7.0 i 7.1 pakiet nazywa się **Docker**). Nie każdy model NAS-a go obsługuje — zwykle nie ma go w tańszych modelach z procesorem ARM (np. seria „j” i część serii „value”). Jeśli w Centrum pakietów nie ma ani Container Managera, ani Dockera, użyj sposobu 2 na komputerze w biurze.
+- Przy pierwszym uruchomieniu NAS musi mieć dostęp do internetu: pobiera wtedy podstawowy obraz (Node.js).
+
+Instalacja:
+1. W **File Station** utwórz folder, np. `docker/ewidencja-palet`.
+2. Wgraj do niego archiwum ZIP z aplikacją, kliknij je prawym przyciskiem i wybierz **Wyodrębnij → Wyodrębnij tutaj**. Sprawdź, czy plik `docker-compose.yml` leży bezpośrednio w tym folderze (jeśli trafił do podfolderu, w kroku 4 wskaż ten podfolder). Archiwum możesz potem usunąć.
+3. Otwórz **Container Manager → Projekt → Utwórz**.
+4. Nazwa: `ewidencja-palet`; ścieżka: folder z plikiem `docker-compose.yml`; źródło: **Użyj istniejącego docker-compose.yml**.
+5. Kliknij **Dalej**, a potem **Gotowe**. Kontener uruchamia się sam, także po restarcie NAS-a.
+6. Wejdź na `http://ADRES-NAS:8080` z dowolnego urządzenia w sieci. ADRES-NAS to adres IP NAS-a w sieci lokalnej, np. `192.168.1.10` — znajdziesz go w DSM w **Panel sterowania → Sieć → Interfejs sieciowy**, w programie **Synology Assistant** albo na stronie https://finder.synology.com. Zamiast adresu IP często działa też nazwa NAS-a, np. `http://DiskStation:8080`.
+
+W dzienniku kontenera (**Container Manager → Kontener → ewidencja-palet → Dziennik**) serwer nie podaje adresu IP — z wnętrza kontenera widzi tylko wewnętrzny adres Dockera, więc wypisuje wskazówkę `http://ADRES-NAS:PORT`.
 
 Dane trafiają do podfolderu `dane/` w tym samym folderze na NAS-ie, więc przeżywają restart i aktualizację kontenera. Kontener startuje jako administrator tylko po to, żeby nadać folderowi `dane/` właściwego właściciela, a potem działa jako zwykły użytkownik.
 
-- **Inny port:** w `docker-compose.yml` zmień linię `"8080:8080"` np. na `"8090:8080"` i zbuduj projekt ponownie.
-- **Hasło:** jeśli NAS ma być dostępny spoza domu, odkomentuj w `docker-compose.yml` linię `EP_HASLO` i wpisz swoje hasło (przeglądarka zapyta o nie przy wejściu; nazwa użytkownika może być dowolna). Przy dostępie z internetu używaj połączenia szyfrowanego (HTTPS), np. przez **Panel sterowania → Portal logowania → Zaawansowane → Odwrotny serwer proxy** z certyfikatem Let's Encrypt — bez HTTPS hasło idzie przez sieć jawnym tekstem.
+- **Inny port:** w `docker-compose.yml` zmień linię `"8080:8080"` np. na `"8090:8080"` (zmieniasz tylko liczbę przed dwukropkiem) i zbuduj projekt ponownie. Adres to wtedy `http://ADRES-NAS:8090`.
+- **Hasło** (zalecane, gdy NAS ma być dostępny spoza biura). Przeglądarka zapyta o nie przy wejściu; nazwa użytkownika może być dowolna. Wybierz jeden z dwóch sposobów:
+  - **Hasło w pliku (najpewniejsze, dowolne znaki).** W folderze `dane` utwórz plik `haslo.txt` z samym hasłem w pierwszej linii (np. w Notatniku na komputerze, potem wgraj przez File Station). W `docker-compose.yml` odkomentuj linię `- EP_HASLO_PLIK=/app/dane/haslo.txt` (usuń `# ` z jej początku) i zbuduj projekt ponownie.
+  - **Hasło wpisane w `docker-compose.yml`.** Odkomentuj linię `- 'EP_HASLO=…'` i wpisz hasło **między apostrofami**. Każdy znak `$` w haśle wpisz podwójnie (`$$`), apostrof też podwójnie (`''`). Przykład: hasło `Ab$12 #x` wpisujesz jako `- 'EP_HASLO=Ab$$12 #x'`. Bez apostrofów Docker po cichu obcina hasło od ` #` i zamienia `$słowo` na pusty tekst — działałoby wtedy inne hasło niż to, które znasz.
+
+  Po 5 błędnych hasłach z jednego urządzenia serwer na chwilę przestaje przyjmować z niego hasła: najpierw na 30 s, przy kolejnych pomyłkach dłużej, najwyżej na 15 min.
+
+  Przy dostępie z internetu używaj połączenia szyfrowanego (HTTPS), np. przez **Panel sterowania → Portal logowania → Zaawansowane → Odwrotny serwer proxy** z certyfikatem Let's Encrypt — bez HTTPS hasło idzie przez sieć jawnym tekstem. Domenę, pod którą otwierasz aplikację (np. `palety.twojanazwa.synology.me`), wpisz w `docker-compose.yml` w linii `- EP_HOSTY=…` (odkomentuj ją) — inaczej serwer odpowie „Nieznana nazwa serwera”.
+- **Aktualizacja aplikacji** (dane zostają):
+  1. **Container Manager → Projekt → ewidencja-palet → Akcja → Zatrzymaj.**
+  2. Dla pewności skopiuj w File Station folder `dane` w bezpieczne miejsce.
+  3. Wgraj nową wersję do tego samego folderu i rozpakuj ją z zastępowaniem istniejących plików. **Nie usuwaj folderu `dane`** — są w nim baza, logo i kopie. Jeśli zmieniałeś coś w `docker-compose.yml` (port, hasło, EP_HOSTY), przenieś te zmiany do nowego pliku.
+  4. **Akcja → Zbuduj** (w niektórych wersjach DSM: **Kompiluj** albo **Build**), potem **Uruchom**. Na koniec odśwież aplikację w przeglądarkach.
 
 ## Przeniesienie danych z wersji online
 
 1. W wersji online (Claude): **Ustawienia i kopia → Pobierz kopię (.json)**.
 2. W wersji lokalnej: **Ustawienia i kopia → Wczytaj kopię z pliku** → wybierz pobrany plik.
-3. Wybierz **Zastąp wszystko** (pierwsze przeniesienie — w pustej aplikacji jest wybrane od razu) albo **Połącz** (dopisanie brakujących operacji).
+3. Wybierz **Zastąp wszystko** (pierwsze przeniesienie — w świeżej, pustej aplikacji jest wybrane od razu) albo **Połącz** (dopisanie brakujących operacji, nic nie jest usuwane).
 
 Przenoszą się kurierzy (z logo, kolejnością, nazwami i stanem początkowym), wszystkie operacje i numery dokumentów WZ/PZ — kolejne numery będą kontynuacją dotychczasowych. W drugą stronę działa tak samo.
 
 ## Kopie zapasowe
 
-- **Ustawienia i kopia → Pobierz kopię (.json)** — w każdej wersji. Plik da się wczytać w każdej wersji.
-- W trybie serwera kopia powstaje też automatycznie w `dane/kopie/`: przy każdym uruchomieniu serwera i w każdy dzień, w którym coś zmieniono (dni bez zmian nie tworzą nowej kopii). Trzymanych jest 30 najnowszych kopii.
-- Pełną kopię z serwera można też pobrać od razu pod adresem `http://ADRES:8080/api/kopia`.
-- Żeby przywrócić dane z kopii (także z `dane/kopie/`), wczytaj plik w aplikacji: **Wczytaj kopię z pliku → Zastąp wszystko**.
-- Najbezpieczniej trzymać kopię także poza komputerem (pendrive, chmura, NAS).
+- **Ustawienia i kopia → Pobierz kopię (.json)** działa w każdej wersji, a pobrany plik da się wczytać w każdej wersji. To jedyna kopia z **aktualnym** stanem — pobieraj ją regularnie (np. raz w tygodniu i przed większymi zmianami) i trzymaj poza komputerem: na pendrivie, w chmurze albo na NAS-ie.
+- W trybie serwera powstaje też automatycznie **kopia dzienna** w `dane/kopie/` (plik `baza-RRRR-MM-DD.json`). Powstaje najwyżej jedna na dzień: przy pierwszym uruchomieniu serwera danego dnia albo tuż przed pierwszą zmianą danego dnia. Zawiera więc stan **z początku dnia, sprzed dzisiejszych zmian**. Trzymanych jest 30 najnowszych kopii.
+- Pełną, aktualną kopię z serwera pobierzesz od razu pod adresem `http://ADRES:8080/api/kopia`.
+- Żeby przywrócić dane z kopii (także z `dane/kopie/`), wczytaj plik w aplikacji: **Wczytaj kopię z pliku → Zastąp wszystko**. Uwaga: dzisiejsza kopia dzienna cofa wszystkie dzisiejsze zmiany — jeśli serwer działa, najpierw pobierz aktualną kopię (`/api/kopia`), żeby mieć do czego wrócić.
+- **Uszkodzony plik bazy.** Jeśli przy uruchomieniu serwer nie może odczytać `dane/baza.json` (np. po awarii dysku albo nieudanej ręcznej edycji), odkłada go jako `dane/baza.uszkodzona-DATA_GODZINA.json` i odtwarza dane z najnowszej poprawnej kopii dziennej. Aplikacja pokazuje wtedy na każdym urządzeniu jednorazowy komunikat z datą kopii i nazwą odłożonego pliku (zamykasz go przyciskiem **Rozumiem**). Operacje zapisane później tego dnia trzeba wprowadzić ponownie albo wczytać nowszą kopię pobraną z aplikacji. Plików w `dane/` nie edytuj ręcznie; jeśli musisz, najpierw zatrzymaj serwer.
 
 ## Najczęstsze problemy
 
-- **Okno serwera pisze, że brakuje Node.js** — zainstaluj Node.js (LTS) z https://nodejs.org i uruchom plik ponownie.
-- **„Port 8080 jest zajęty”** — inny program (albo drugie okno serwera) używa tego portu. Zamknij poprzednie okno serwera albo uruchom z innym portem (patrz wyżej).
-- **Telefon nie otwiera adresu** — telefon musi być w tej samej sieci Wi-Fi co komputer. Zapora systemu może zapytać o zgodę dla Node.js — zezwól na dostęp w sieci prywatnej.
-- **Pasek „Brak połączenia z serwerem”** — serwer jest wyłączony albo komputer z serwerem uśpiony. Uruchom go ponownie; strona połączy się sama.
-- **Pusta ewidencja po otwarciu `index.html` w innej przeglądarce** — to normalne w sposobie 1 (każda przeglądarka ma swoje dane). Wczytaj kopię albo użyj sposobu 2.
+- **„Brakuje plików aplikacji…” w oknie serwera.** Plik uruchomiono bez rozpakowania archiwum albo skopiowano go bez reszty folderu. Rozpakuj całe archiwum i uruchom plik z rozpakowanego folderu.
+- **Okno serwera pisze, że brakuje Node.js.** Zainstaluj Node.js (LTS) z https://nodejs.org i uruchom plik ponownie.
+- **„Port 8080 jest zajęty”.** Inny program (albo drugie okno serwera) używa tego portu. Zamknij poprzednie okno serwera albo uruchom z innym portem (patrz „Inny port”).
+- **Telefon nie otwiera adresu.** Telefon musi być w tej samej sieci Wi-Fi co komputer (nie w sieci „dla gości”). Przy pierwszym uruchomieniu zapora Windows pyta o zgodę dla Node.js — zezwól w sieciach prywatnych. Jeśli to nie pomaga, sprawdź profil sieci: **Ustawienia → Sieć i Internet → Wi-Fi** (albo **Ethernet**) → nazwa Twojej sieci → **Typ profilu sieci: Prywatna**; gdy sieć jest „Publiczna”, Windows blokuje połączenia z telefonów. Na Macu: jeśli w **Ustawienia systemowe → Sieć → Zapora** zapora jest włączona, zezwól na połączenia przychodzące dla programu „node”.
+- **Pasek „Brak połączenia z serwerem”.** Serwer nie odpowiada: jest wyłączony, komputer z serwerem jest uśpiony albo zerwało się Wi-Fi. Uruchom serwer ponownie; pasek zniknie sam, gdy tylko serwer odpowie.
+- **„Nie wczytano pliku runtime-lokalny.js”.** `index.html` otwarto bez reszty plików (np. skopiowany sam). Otwórz go z rozpakowanego folderu.
+- **„Nieznana nazwa serwera”.** Otwierasz aplikację pod własną domeną (odwrotny serwer proxy, DDNS). Ze względów bezpieczeństwa serwer odpowiada tylko pod adresem IP i nazwami z sieci lokalnej (np. `nas`, `nas.local`). Dopisz swoją domenę w zmiennej `EP_HOSTY` (kilka nazw rozdziel przecinkami): Docker — w `docker-compose.yml` odkomentuj linię `- EP_HOSTY=…`; Mac/Linux z terminala — `EP_HOSTY=palety.example.pl node server.js`.
+- **„Za dużo błędnych haseł z tego urządzenia”.** Odczekaj podany czas (od 30 s do 15 min) i wpisz hasło ponownie.
+- **Komunikat „plik bazy na serwerze był uszkodzony…”.** Zobacz „Kopie zapasowe”: serwer odtworzył dane z kopii dziennej. Sprawdź ostatnie operacje i kliknij **Rozumiem**.
+- **Pusta ewidencja po otwarciu `index.html` w innej przeglądarce.** To normalne w sposobie 1 (każda przeglądarka ma swoje dane). Wczytaj kopię albo użyj sposobu 2.

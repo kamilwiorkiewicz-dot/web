@@ -9,7 +9,7 @@
   :root{
     box-sizing:border-box;
     --bg:#F4F6F8; --panel:#FFFFFF; --panel-2:#F0F2F5; --border:#DDE2E7;
-    --text:#12161B; --text-dim:#5B6670; --text-faint:#6B7680;
+    --text:#12161B; --text-dim:#5B6670; --text-faint:#5F6A74;
     --accent:#0891A8; --accent-strong:#046B7F; --accent-bg:#DFF4F8;
     --good:#17734A; --good-bg:#E1F5EA;
     --bad:#A84A06; --bad-bg:#FBE6D2;
@@ -279,7 +279,7 @@
     border:1px solid transparent; background:transparent; color:var(--text-faint);
     width:30px; height:30px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer;
   }
-  .icon-btn svg{ width:15px; height:15px; }
+  .icon-btn svg{ width:15px; height:15px; flex-shrink:0; }
   .icon-btn:hover{ background:var(--panel-2); color:var(--text); }
   .icon-btn.danger:hover{ color:var(--bad); }
   .icon-btn.accent:hover{ color:var(--accent-strong); }
@@ -441,6 +441,9 @@
   @media (min-width:641px){ td.note-cell{ max-width:220px; } }
   [role="button"][tabindex]:focus-visible, .swatch:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
   .swatch{ padding:0; }
+  .link-btn{ background:none; border:none; color:inherit; font:inherit; display:inline-flex; align-items:center; gap:9px; padding:0; cursor:pointer; text-align:left; }
+  .row-main{ display:flex; align-items:center; gap:12px; flex:1; min-width:0; }
+  .row-main .info{ min-width:0; }
 
   /* print preview / printing */
   #printRoot:empty{ display:none; }
@@ -540,6 +543,7 @@ const ICONS = {
 
 /* ---------------------------- STATE ---------------------------- */
 const COURIER_COLORS = ['#2BE8FF','#9C8CFF','#39FF8A','#FF4FA3','#FFC845','#5CC9F5'];
+const COURIER_COLOR_NAMES = ['turkusowy','fioletowy','zielony','różowy','żółty','błękitny'];
 const DEFAULT_COURIERS = [
   {id:'dpd', name:'DPD', order:1, color:'#FF3D5A'},
   {id:'inpost', name:'InPost', order:2, color:'#FFC845'},
@@ -577,7 +581,8 @@ let editingId = null;      // id of the operation open in the edit form (survive
 const TX_WINDOW = 1000;
 let liveTx = [];
 let olderTx = new Map();
-let olderBoundary = null, olderLoadToken = 0, historyComplete = false;
+let olderBoundary = null, olderLoadToken = 0, historyComplete = false, olderLoading = false;
+let pendingDataRender = false;   // a data re-render postponed while a date field is being typed into
 let counters = null;       // meta/counters: last issued WZ / PZ numbers
 let docketMigrationDone = false;
 let migrating = false;     // while freezing document numbers, skip the per-write re-render
@@ -625,8 +630,9 @@ function pctLabel(cur, prev){
   if(prev===0) return cur>0 ? 'wzrost od zera' : 'bez zmian';
   const raw = (cur-prev)/prev*100;
   if(raw===0) return 'bez zmian';
-  const shown = Math.abs(raw)<1 ? fmt1(raw) : String(Math.round(raw));
-  return `${raw>0?'+':''}${shown}%`;
+  const a = Math.abs(raw);
+  const shown = a<0.1 ? '<0,1' : a<1 ? fmt1(a) : (raw<0 && cur>0 && a>99) ? '>99' : String(Math.round(a));
+  return `${raw>0?'+':'−'}${shown}%`;
 }
 function pctText(v){ if(v===null || !Number.isFinite(v)) return '—'; if(v>0 && v<1) return '<1%'; if(v>99 && v<100) return '>99%'; return Math.round(v)+'%'; }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -707,7 +713,7 @@ function slownie(n){
 }
 // CSV cell: quote, and neutralise text that Excel would run as a formula (=, +, -, @ at the start)
 function csvCell(v, isText){
-  let s = String(v==null?'':v).replace(/\r?\n/g,' ');
+  let s = String(v==null?'':v).replace(/\r?\n/g,'\r\n');   // a quoted CSV field may hold line breaks
   if(isText && /^[=+\-@\t\r]/.test(s)) s = "'"+s;
   return `"${s.replace(/"/g,'""')}"`;
 }
@@ -719,6 +725,15 @@ function saveFile(filename, data, mime){
     document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
     return Promise.resolve(true);
   }catch(e){ toast('Eksport plików niedostępny w tym widoku', true); return Promise.resolve(false); }
+}
+function normalizeCourier(c){
+  const int = (x)=> Number.isInteger(x) && x>0 && x<=1000000 ? x : 0;
+  return {...c,
+    name: (typeof c.name==='string' && c.name.trim()) ? c.name : String(c.name==null ? c.id : c.name),
+    color: safeColor(c.color, '#8A8578'),
+    openingWydane: int(c.openingWydane), openingZwrot: int(c.openingZwrot),
+    logoAssetId: typeof c.logoAssetId==='string' ? c.logoAssetId : null,
+  };
 }
 function safeColor(c, fallback){ return (typeof c==='string' && /^#[0-9a-fA-F]{3,8}$/.test(c)) ? c : (fallback || 'var(--accent)'); }
 function blobToDataUrl(blob){ return new Promise((res,rej)=>{ const fr = new FileReader(); fr.onload = ()=>res(fr.result); fr.onerror = ()=>rej(fr.error); fr.readAsDataURL(blob); }); }
@@ -766,13 +781,29 @@ function nextDocketNumber(typ, stored){
 // the store offers leases), and the counter is re-read right before it is moved — never written back
 // from a stale local copy, so one device can't lower the counter another just raised.
 const TAB_ID = 'tab-' + Math.random().toString(36).slice(2, 10);
-async function withNumberingLock(fn){
+// numbering steps of this tab run one after another (a lease held by this tab would otherwise let a
+// second step of the same tab in); the lease is renewed every second while a step runs, so a slow
+// network/disk can't let it lapse halfway through
+let numberingChain = Promise.resolve();
+function withNumberingLock(fn){
+  const run = numberingChain.then(()=>lockedStep(fn));
+  numberingChain = run.catch(()=>{});
+  return run;
+}
+let activeLock = null;   // {lost} of the numbering step running now; writeCounters refuses to write after a lost lease
+async function lockedStep(fn){
   const lock = db.doc('meta/numeracja');
   if(typeof lock.acquire !== 'function') return fn();
   for(let i=0; i<25; i++){
     let res = null;
-    try{ res = await lock.acquire({holder:TAB_ID, ttlMs:2500}); }catch(e){ console.warn('lease', e); return fn(); }
-    if(res && res.acquired) return fn();
+    try{ res = await lock.acquire({holder:TAB_ID, ttlMs:2500}); }
+    catch(e){ console.warn('lease', e); throw Object.assign(new Error('Brak połączenia z bazą — numer dokumentu nie został nadany.'), {code:'unavailable'}); }
+    if(res && res.acquired){
+      const state = {lost:false};
+      const renew = setInterval(()=>{ lock.acquire({holder:TAB_ID, ttlMs:2500}).then(r=>{ if(r && r.acquired===false) state.lost = true; }).catch(()=>{}); }, 1000);
+      activeLock = state;
+      try{ return await fn(); } finally { clearInterval(renew); if(activeLock===state) activeLock = null; }
+    }
     await new Promise(r=>setTimeout(r, 200 + i*60));
   }
   throw Object.assign(new Error('Numeracja dokumentów jest zajęta — spróbuj ponownie.'), {code:'busy'});
@@ -782,6 +813,7 @@ async function readCounters(){
   return {exists: snap.exists, data: snap.exists ? (snap.data()||{}) : {}};
 }
 async function writeCounters(cur, patch){
+  if(activeLock && activeLock.lost) throw Object.assign(new Error('Numeracja dokumentów jest zajęta — spróbuj ponownie.'), {code:'busy'});
   if(cur.exists) await db.doc('meta/counters').update(patch);
   else await db.doc('meta/counters').set({...cur.data, ...patch});
   counters = {...(counters||{}), ...cur.data, ...patch};
@@ -807,10 +839,11 @@ async function ensureUniqueDocket(id, nr, typ){
   try{
     const snap = await db.collection('transactions').where('nr','==',nr).get();
     if(snap.docs.length < 2) return nr;
-    const first = snap.docs.map(d=>({id:d.id, c:(d.data()||{}).createdAt||0})).sort((a,b)=> a.c-b.c || (a.id<b.id?-1:1))[0];
+    // whoever received the number first keeps it (nrAt = when the number was given; older data: createdAt)
+    const first = snap.docs.map(d=>{ const x = d.data()||{}; return {id:d.id, c:x.nrAt||x.createdAt||0}; }).sort((a,b)=> a.c-b.c || (a.id<b.id?-1:1))[0];
     if(first.id === id) return nr;
     const fresh = await allocDocket(typ);
-    await db.collection('transactions').doc(id).update({nr: fresh});
+    await db.collection('transactions').doc(id).update({nr: fresh, nrAt: Date.now()});
     toast(`Numer ${nr} został równocześnie nadany na innym urządzeniu — ta operacja dostała numer ${fresh}.`);
     return fresh;
   }catch(e){ console.warn('unique check', e); return nr; }
@@ -834,8 +867,9 @@ async function migrateDockets(){
         await db.collection('transactions').doc(t.id).update({nr});
       }
       const maxOf = (prefix)=> Math.max(0, ...[...used].filter(x=>x.startsWith(prefix)).map(docketNum));
-      const target = {wz: Math.max(cur.data.wz||0, maxOf('WZ')), pz: Math.max(cur.data.pz||0, maxOf('PZ'))};
-      if(!cur.exists || cur.data.wz!==target.wz || cur.data.pz!==target.pz) await writeCounters(cur, target);
+      const now = await readCounters();   // re-read: the counter only ever goes up
+      const target = {wz: Math.max(now.data.wz||0, cur.data.wz||0, maxOf('WZ')), pz: Math.max(now.data.pz||0, cur.data.pz||0, maxOf('PZ'))};
+      if(!now.exists || now.data.wz!==target.wz || now.data.pz!==target.pz) await writeCounters(now, target);
     });
   }catch(e){ console.error(e); /* view-only viewers can't write; numbers still display from the computed fallback */ }
   if(migrating){ migrating = false; render(true); }
@@ -867,6 +901,16 @@ async function initDb(){
   db = await use('db');
   downloadsApi = await use('downloads');
   assetsApi = await use('assets');
+  if(!db && document.querySelector('script[src$="runtime-lokalny.js"]')){
+    document.getElementById('sidebarBalance').textContent = '—';
+    document.getElementById('mobileBalance').textContent = '—';
+    document.getElementById('main').innerHTML = `
+      <div class="empty" style="margin-top:60px;">
+        ${ICONS.box}<h3>Nie wczytano pliku runtime-lokalny.js</h3>
+        <p>Uruchom aplikację z rozpakowanego folderu — wszystkie pliki (runtime-lokalny.js, fonts/ i inne) muszą leżeć obok index.html.</p>
+      </div>`;
+    return;
+  }
   if(!db){
     document.getElementById('sidebarBalance').textContent = '—';
     document.getElementById('mobileBalance').textContent = '—';
@@ -879,7 +923,7 @@ async function initDb(){
   }
 
   db.collection('couriers').orderBy('order','asc').onSnapshot((snap)=>{
-    couriers = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    couriers = snap.docs.map(d=>normalizeCourier({id:d.id, ...d.data()}));
     couriersLoaded = true;
     if(!bulkWriting) render(true);
     maybeSeed();
@@ -912,9 +956,14 @@ async function initDb(){
   // operations older than the live window are read once; refresh them when the page comes back
   // into view and every few minutes, so edits/deletes of old entries made elsewhere show up
   document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refreshOlder(); });
-  setInterval(refreshOlder, 5*60*1000);
+  setInterval(refreshOlder, 2*60*1000);
+  window.addEventListener('online', ()=>setTimeout(refreshOlder, 1500));
 }
-function refreshOlder(){ if(olderBoundary && historyComplete && !bulkWriting) loadOlderTransactions(olderBoundary); }
+function refreshOlder(){
+  if(!olderBoundary || !historyComplete || bulkWriting) return;
+  if(window.EP_LOCAL && window.EP_LOCAL.online===false) return;   // local server unreachable: try again later
+  loadOlderTransactions(olderBoundary, true);
+}
 
 // Default couriers are created once, for a brand-new empty database only — never again after the
 // user deletes them (meta/settings.seeded remembers it, across devices and reloads).
@@ -941,8 +990,9 @@ function mergeTransactions(){
   invalidTx = all.filter(t=>!isValidTx(t));
 }
 // pages through everything dated on/before the live window's oldest day
-async function loadOlderTransactions(boundary){
+async function loadOlderTransactions(boundary, background){
   const token = ++olderLoadToken;
+  olderLoading = true;
   const fetched = new Map();
   try{
     let b = boundary, exhausted = false;
@@ -950,20 +1000,25 @@ async function loadOlderTransactions(boundary){
       const snap = await db.collection('transactions').where('data','<=',b).orderBy('data','desc').limit(TX_WINDOW).get();
       let added = 0;
       snap.docs.forEach(d=>{ if(!fetched.has(d.id)){ fetched.set(d.id, {id:d.id, ...d.data()}); added++; } });
-      if(snap.docs.length<TX_WINDOW || added===0){ exhausted = true; break; }
+      if(snap.docs.length<TX_WINDOW){ exhausted = true; break; }
+      if(added===0){ exhausted = false; break; }   // 1000+ operations on one day — can't page further by date
       b = (snap.docs[snap.docs.length-1].data()||{}).data;
       if(typeof b!=='string'){ exhausted = true; break; }
     }
     if(token!==olderLoadToken) return;
+    olderLoading = false;
     olderTx = fetched; historyComplete = true;
     if(!exhausted) toast('Historia jest bardzo duża — wczytano tylko część, sumy mogą być niepełne.', true);
   }catch(e){
     console.error(e);
-    if(token===olderLoadToken) toast('Nie udało się wczytać starszej historii — sumy mogą być niepełne. Odśwież stronę.', true);
+    if(token===olderLoadToken){ olderLoading = false; if(!background) toast('Nie udało się wczytać starszej historii — sumy mogą być niepełne. Odśwież stronę.', true); }
     return;
   }
   mergeTransactions(); render(true); migrateDockets();
 }
+// A local write made while older history is being (re)loaded: start the load again, so its result
+// is read after the write instead of overwriting it with the state from before.
+function noteLocalWrite(){ if(olderLoading && olderBoundary) loadOlderTransactions(olderBoundary); }
 
 async function seedCouriers(){
   try{
@@ -1049,7 +1104,8 @@ function applyLocalTx(id, doc){
   if(i>-1) liveTx[i] = {...doc, id}; else if(!olderTx.has(id)) liveTx.push({...doc, id});
   mergeTransactions();
 }
-function goView(view){ currentView = view; editingId = null; render(); window.scrollTo(0,0); }
+function focusHeading(){ const h = document.querySelector('#main h1'); if(h){ h.setAttribute('tabindex','-1'); h.focus({preventScroll:true}); } }
+function goView(view){ currentView = view; editingId = null; render(); window.scrollTo(0,0); focusHeading(); }
 function renderNav(){
   const activeId = currentView==='courierDetail' ? 'stats' : currentView;
   const sn = document.getElementById('settingsNav');
@@ -1063,7 +1119,7 @@ function renderNav(){
     <button class="nav-item ${activeId===v.id?'active':''}" data-view="${v.id}">${ICONS[v.icon]}<span>${v.label}</span></button>
   `).join('');
   nav.querySelectorAll('.nav-item').forEach(btn=>{
-    btn.addEventListener('click', ()=>{ currentView = btn.dataset.view; editingId = null; render(); window.scrollTo(0,0); });
+    btn.addEventListener('click', ()=>goView(btn.dataset.view));
   });
 
   const bn = document.getElementById('bottomNav');
@@ -1073,7 +1129,7 @@ function renderNav(){
     <button class="bn-item ${activeId===v.id?'active':''}" data-view="${v.id}">${ICONS[v.icon]}<span>${v.label}</span></button>
   `).join('');
   bn.querySelectorAll('[data-view]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{ currentView = btn.dataset.view; editingId = null; render(); window.scrollTo(0,0); });
+    btn.addEventListener('click', ()=>goView(btn.dataset.view));
   });
 }
 
@@ -1107,11 +1163,14 @@ function getTheme(){ try{ return localStorage.getItem('ep-theme') || themeFallba
 function render(fromData){
   renderNav();
   renderThemeToggle();
-  const bal = num(totalOutstanding())+' szt.';
-  document.getElementById('sidebarBalance').textContent = bal;
-  document.getElementById('mobileBalance').textContent = bal;
+  const bal = num(totalOutstanding())+' szt.'+(historyComplete || !db ? '' : ' …');
+  ['sidebarBalance','mobileBalance'].forEach(id=>{ const el = document.getElementById(id); el.textContent = bal; el.title = historyComplete ? '' : 'Wczytywanie starszej historii — suma może być jeszcze niepełna'; });
   const main = document.getElementById('main');
   if(!db) return;
+  // data arrived while a date field is being typed into: rebuilding the view now would garble the
+  // half-typed date, so wait until the field loses focus
+  const ae = document.activeElement;
+  if(fromData && ae && main.contains(ae) && ae.matches && ae.matches('input[type=date]') && currentView!=='new'){ pendingDataRender = true; return; }
 
   // preserve focus + cursor position across re-renders (typing in a filter
   // field triggers render(), which would otherwise steal focus after every keystroke)
@@ -1143,9 +1202,9 @@ function openCourierDetail(id){
   selectedCourierId = id; cdWeekOffset = 0; cdYear = new Date().getFullYear();
   cdExpandedMonth = null; cdExpandedWeek = null;
   stFrom = todayStr().slice(0,8)+'01'; stTo = todayStr();
-  currentView = 'courierDetail'; render(); window.scrollTo(0,0);
+  currentView = 'courierDetail'; render(); window.scrollTo(0,0); focusHeading();
 }
-function openNewOpFor(courierId, typ){ prefillCourierId = courierId; prefillType = typ||null; editingId = null; currentView='new'; render(); window.scrollTo(0,0); }
+function openNewOpFor(courierId, typ){ prefillCourierId = courierId; prefillType = typ||null; editingId = null; currentView='new'; render(); window.scrollTo(0,0); const q = document.getElementById('opIlosc'); if(q) q.focus({preventScroll:true}); }
 
 // couriers holding our pallets with no return for 14+ days (or none ever) — shared by dashboard & stats
 function staleCourierList(){
@@ -1174,14 +1233,14 @@ function viewDashboard(){
   const stale = staleCourierList();
 
   function balanceMeta(bilans){
-    if(bilans>0) return { caption:`Kurier jest nam winien ${paletAcc(bilans)}`, title:`Kurier ma u siebie ${paletAcc(bilans)} należących do nas i jeszcze ich nie oddał.` };
+    if(bilans>0) return { caption:`Kurier jest nam winien ${paletAcc(bilans)}`, title:`Kurier ma u siebie ${num(bilans)} szt. naszych palet i jeszcze ich nie oddał.` };
     if(bilans<0) return { caption:`My jesteśmy winni kurierowi ${paletAcc(Math.abs(bilans))}`, title:`Oddaliśmy kurierowi więcej palet niż od niego dostaliśmy (różnica ${num(Math.abs(bilans))} szt.) — warto sprawdzić wpisy w historii.` };
     return { caption:`Rozliczone — brak zaległości`, title:`Tyle samo palet wydanych, co zwróconych.` };
   }
 
   return `
     <div class="view-head">
-      <div><h1>Pulpit</h1><p>${fmtDateLong(todayStr())} · dziś ${num(todayCount)} op. · aktywni kurierzy: ${num(activeCount)}</p></div>
+      <div><h1>Pulpit</h1><p>${fmtDateLong(todayStr())} · dziś ${num(todayCount)} op. · aktywni kurierzy: ${num(activeCount)}${historyComplete?'':' · <span style="color:var(--bad)">wczytywanie starszej historii — sumy mogą być jeszcze niepełne</span>'}</p></div>
     </div>
 
     ${stale.length? `<div class="alert-strip" role="note">
@@ -1200,6 +1259,7 @@ function viewDashboard(){
           <div class="head">${courierBadge(b.courier,34)}<div><div class="name">${escapeHtml(b.courier.name)}</div><div class="tag">${escapeHtml(b.courier.id)}</div></div></div>
           <div class="row"><span>Wydane</span><b>${num(b.wydane)}</b></div>
           <div class="row"><span>Zwrócone</span><b>${num(b.zwrocone)}</b></div>
+          ${(b.courier.openingWydane||b.courier.openingZwrot) ? `<div style="font-size:12px; color:var(--text-faint); margin-top:-2px;">w tym stan początkowy: +${num(b.courier.openingWydane||0)} / −${num(b.courier.openingZwrot||0)}</div>` : ''}
           <div class="row" style="border-top:1px dashed var(--border); margin-top:5px; padding-top:7px;"><span>Ten tydzień</span><b><span style="color:var(--bad)">+${num(wkW)}</span> <span style="color:var(--text-faint);">/</span> <span style="color:var(--good)">−${num(wkZ)}</span></b></div>
           <div class="balance-line" title="${escapeHtml(meta.title)}">
             <span style="font-size:13.5px; font-weight:600; color:var(--text-dim);">Bilans</span>
@@ -1431,10 +1491,11 @@ function niceStep(span){
   const raw = Math.max(1, span/4); const p = Math.pow(10, Math.floor(Math.log10(raw))); const f = raw/p;
   return Math.max(1, (f<=1?1:f<=2?2:f<=5?5:10)*p);
 }
+function axisPad(values){ return Math.max(30, Math.round(Math.max(...values.map(v=>num(v).length))*7.8 + 12)); }
 function svgBarChartGrouped(labels, seriesA, seriesB, colorA, colorB, opts={}){
-  const w = opts.width||chartWidth(), h = opts.height||230, padL=36, padB=28, padT=10, padR=8;
-  const innerW = w-padL-padR, innerH = h-padT-padB;
   const rawMax = Math.max(1, ...seriesA, ...seriesB); const tick = niceStep(rawMax); const max = tick*Math.ceil(rawMax/tick);
+  const w = opts.width||chartWidth(), h = opts.height||230, padL=axisPad([0, max]), padB=28, padT=10, padR=8;
+  const innerW = w-padL-padR, innerH = h-padT-padB;
   const nameA = opts.nameA||'Wydania', nameB = opts.nameB||'Zwroty';
   const n = labels.length; const groupW = innerW/n; const barW = Math.min(16, groupW*0.34);
   const maxLabels = Math.max(3, Math.floor(w/56));
@@ -1443,7 +1504,7 @@ function svgBarChartGrouped(labels, seriesA, seriesB, colorA, colorB, opts={}){
   for(let i=0;i<=steps;i++){
     const y = padT + innerH - (innerH*i/steps); const v = tick*i;
     gridLines += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
-    gridLines += `<text x="${padL-6}" y="${y+4}" font-size="12.5" font-weight="600" text-anchor="end" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${v}</text>`;
+    gridLines += `<text x="${padL-6}" y="${y+4}" font-size="12.5" font-weight="600" text-anchor="end" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${num(v)}</text>`;
   }
   labels.forEach((lab,i)=>{
     const cx = padL + groupW*i + groupW/2; const ah=(seriesA[i]/max)*innerH; const bh=(seriesB[i]/max)*innerH;
@@ -1454,11 +1515,11 @@ function svgBarChartGrouped(labels, seriesA, seriesB, colorA, colorB, opts={}){
   return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img">${gridLines}${bars}${xLabels}</svg>`;
 }
 function svgLineChart(labels, series, color, opts={}){
-  const w = opts.width||chartWidth(), h = opts.height||200, padL=40, padB=28, padT=14, padR=10;
-  const innerW = w-padL-padR, innerH = h-padT-padB;
   const rawMax = Math.max(...series, 0), rawMin = Math.min(...series, 0);
   const tick = niceStep((rawMax-rawMin)||1);
-  const maxV = tick*Math.ceil(rawMax/tick) || tick, minV = tick*Math.floor(rawMin/tick), range=(maxV-minV)||1, n=series.length;
+  const maxV = rawMax>0 ? tick*Math.ceil(rawMax/tick) : (rawMin<0 ? 0 : tick), minV = tick*Math.floor(rawMin/tick), range=(maxV-minV)||1, n=series.length;
+  const w = opts.width||chartWidth(), h = opts.height||200, padL=axisPad([maxV, minV]), padB=28, padT=14, padR=10;
+  const innerW = w-padL-padR, innerH = h-padT-padB;
   const steps = Math.round(range/tick);
   const stepX = n>1? innerW/(n-1) : 0;
   const maxLabels = Math.max(3, Math.floor(w/60));
@@ -1470,7 +1531,7 @@ function svgLineChart(labels, series, color, opts={}){
   for(let i=0;i<=steps;i++){
     const y = padT + innerH*i/steps; const v = maxV - tick*i;
     gridLines += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
-    gridLines += `<text x="${padL-6}" y="${y+4}" font-size="12.5" font-weight="600" text-anchor="end" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${v}</text>`;
+    gridLines += `<text x="${padL-6}" y="${y+4}" font-size="12.5" font-weight="600" text-anchor="end" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${num(v)}</text>`;
   }
   labels.forEach((lab,i)=>{ if(n<=maxLabels || i%Math.ceil(n/maxLabels)===0) xLabels += `<text x="${pts[i][0]}" y="${h-7}" font-size="12" font-weight="600" text-anchor="middle" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${lab}</text>`; });
   return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img">
@@ -1510,8 +1571,10 @@ function viewStats(){
   const sumZwrot = periodTx.filter(t=>t.typ==='zwrot').reduce((s,t)=>s+t.ilosc,0);
   const opsCount = periodTx.length;
   const avgPerOp = opsCount? (periodTx.reduce((s,t)=>s+t.ilosc,0)/opsCount) : 0;
-  const returnRate = sumWydane>0 ? (sumZwrot/sumWydane*100) : null;   // null = no issues in the period: rate undefined
   const openingW = couriers.reduce((s,c)=>s+(c.openingWydane||0),0), openingZ = couriers.reduce((s,c)=>s+(c.openingZwrot||0),0);
+  // for the whole period the rate counts the opening balance too, like "Niezwrócone łącznie" next to it
+  const rateW = sumWydane + (statsPeriod==='all' ? openingW : 0), rateZ = sumZwrot + (statsPeriod==='all' ? openingZ : 0);
+  const returnRate = rateW>0 ? (rateZ/rateW*100) : null;   // null = no issues in the period: rate undefined
 
   const byCourier = {};
   for(const t of periodTx){
@@ -1645,11 +1708,11 @@ function viewStats(){
     if(prev4W===0 && (!earliestTx || earliestTx >= addDays(toKey(todayMon), -28))) insights.push({ tone:'info', text:`Ostatnie 4 pełne tygodnie: wydano <b>${num(last4W)} szt.</b> Wcześniejszych tygodni nie ma jeszcze w ewidencji, więc trendu nie da się policzyć.` });
     else if(prev4W===0) insights.push({ tone:'info', text:`W poprzednich 4 tygodniach (od ${fmtDate(prev4Start)}) nie było wydań, w ostatnich 4 pełnych tygodniach wydano <b>${num(last4W)} szt.</b>` });
     else if(last4W===prev4W) insights.push({ tone:'info', text:`Wydania w ostatnich 4 pełnych tyg. bez zmian względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
-    else insights.push({ tone:'info', text:`Wydania ${last4W>prev4W?'rosną':'maleją'} o <b>${pctLabel(last4W,prev4W).replace(/^[+-]/,'')}</b> w ostatnich 4 pełnych tyg. względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
+    else insights.push({ tone:'info', text:`Wydania ${last4W>prev4W?'rosną':'maleją'} o <b>${pctLabel(last4W,prev4W).replace(/^[+−-]/,'')}</b> w ostatnich 4 pełnych tyg. względem poprzednich 4 tyg. (${num(prev4W)} → ${num(last4W)} szt.).` });
   }
   if(transactions.length) insights.push({ tone:'info', text:`Ten tydzień (${weekDayIdx===0?'dziś':'pon.–dziś'}): wydano <b>${num(thisWeekW)} szt.</b>; w tych samych dniach poprzedniego tygodnia: ${num(lastWeekW)} szt. (${pctLabel(thisWeekW,lastWeekW)}). Cały poprzedni tydzień: ${num(lastWeekFullW)} szt.` });
   if(transactions.length) insights.push({ tone:'info', text:`Ten miesiąc (1.–${dayOfMonth}.): wydano <b>${num(thisMonthW)} szt.</b>; w tym samym okresie poprzedniego miesiąca: ${num(prevMonthW)} szt. (${pctLabel(thisMonthW,prevMonthW)}). Cały poprzedni miesiąc: ${num(prevMonthFullW)} szt.` });
-  if(peakWeekdayIdx>=0 && peakWeekdayOcc>0) insights.push({ tone:'info', text:`<b>${WEEKDAYS_PL[peakWeekdayIdx]}</b> to Twój najbardziej pracowity dzień tygodnia — średnio <b>${fmt1(peakWeekdayAvg)} szt.</b> wydania (łącznie ${num(peakWeekdayVal)} szt. z ${peakWeekdayOcc} ${peakWeekdayOcc===1?'dnia':'dni'}, w które były wydania).` });
+  if(peakWeekdayIdx>=0 && peakWeekdayOcc>0) insights.push({ tone:'info', text:`<b>${WEEKDAYS_PL[peakWeekdayIdx]}</b> to Twój najbardziej pracowity dzień tygodnia — średnio <b>${fmt1(peakWeekdayAvg)} szt.</b> wydania (łącznie ${num(peakWeekdayVal)} szt. z ${peakWeekdayOcc} ${peakWeekdayOcc===1?'dnia, w którym były':'dni, w które były'} wydania).` });
   if(topMonthsList[0]) insights.push({ tone:'info', text:`Najbardziej aktywny miesiąc: <b>${monthLabel(topMonthsList[0].mk)}</b> — wydano ${num(topMonthsList[0].w)} szt.` });
   if(avgPerActiveDay>0) insights.push({ tone:'info', text:`Średnio wydajesz <b>${fmt1(avgPerActiveDay)} szt.</b> w dniu, w którym w ogóle są wydania.` });
   if(grower && grower.delta!==0) insights.push({ tone: grower.delta>0?'info':'good', text:`<b>${escapeHtml(grower.courier.name)}</b> ${grower.delta>0?'zwiększył':'zmniejszył'} odbiór palet o <b>${num(Math.abs(grower.delta))}</b> szt. (ost. 30 dni vs poprz. 30 dni).` });
@@ -1661,7 +1724,7 @@ function viewStats(){
   staleCouriers.forEach(b=> alerts.push({ tone:'warn', text: b.info.status==='never'
       ? `<b>${escapeHtml(b.courier.name)}</b> nie zwrócił jeszcze żadnej palety — ma u siebie ${num(b.bilans)} szt.`
       : `<b>${escapeHtml(b.courier.name)}</b> nie oddał żadnej palety od <b>${b.info.days} dni</b> (ostatni zwrot: ${fmtDate(b.info.date)}) — ma u siebie ${num(b.bilans)} szt.` }));
-  if(returnRate!==null && Math.round(returnRate)<70) alerts.push({ tone:'warn', text:`Wskaźnik zwrotów w wybranym okresie to tylko <b>${pctText(returnRate)}</b> (zwrócono ${num(sumZwrot)} z ${num(sumWydane)} szt. wydanych) — warto sprawdzić zaległe palety u kurierów.` });
+  if(returnRate!==null && Math.round(returnRate)<70 && lifetimeOutstanding>0) alerts.push({ tone:'warn', text:`Wskaźnik zwrotów w wybranym okresie to tylko <b>${pctText(returnRate)}</b> (zwrócono ${num(rateZ)} z ${num(rateW)} szt. wydanych${statsPeriod==='all' && (openingW||openingZ) ? ', ze stanem początkowym' : ''}) — warto sprawdzić zaległe palety u kurierów.` });
   if(Math.round(outstandingRatio)>=45) alerts.push({ tone:'warn', text:`Aż <b>${pctText(outstandingRatio)}</b> wszystkich kiedykolwiek wydanych palet jest wciąż niezwrócone (${num(lifetimeOutstanding)} szt.) — spory zator w rozliczeniach.` });
   if(daysSinceLastTx!==null && daysSinceLastTx>=5) alerts.push({ tone:'warn', text:`Brak jakiejkolwiek operacji od <b>${dni(daysSinceLastTx)}</b> (ostatnia: ${fmtDate(lastTx.data)}) — sprawdź, czy ewidencja jest na bieżąco.` });
 
@@ -1678,7 +1741,7 @@ function viewStats(){
 
   return `
     <div class="view-head">
-      <div><h1>Statystyki</h1><p>Kliknij kuriera, aby zobaczyć szczegółowy rozkład tygodni i miesięcy.</p></div>
+      <div><h1>Statystyki</h1><p>Kliknij kuriera, aby zobaczyć szczegółowy rozkład tygodni i miesięcy.${historyComplete?'':' <span style="color:var(--bad)">Wczytywanie starszej historii — liczby mogą być jeszcze niepełne.</span>'}</p></div>
       <div class="period-tabs">
         ${[['week','Tydzień'],['month','Miesiąc'],['year','Rok'],['all','Cały okres']].map(([k,l])=>`<button class="${statsPeriod===k?'active':''}" data-period="${k}">${l}</button>`).join('')}
       </div>
@@ -1688,7 +1751,7 @@ function viewStats(){
       <div class="kpi"><div class="lbl">Wydane w okresie</div><div class="val" style="color:var(--bad)">${num(sumWydane)}</div><div class="sub">${statsPeriod==='all' && openingW ? `szt. + ${num(openingW)} ze stanu początkowego` : 'szt.'}</div></div>
       <div class="kpi"><div class="lbl">Zwrócone w okresie</div><div class="val" style="color:var(--good)">${num(sumZwrot)}</div><div class="sub">${statsPeriod==='all' && openingZ ? `szt. + ${num(openingZ)} ze stanu początkowego` : 'szt.'}</div></div>
       <div class="kpi"><div class="lbl">Liczba operacji</div><div class="val">${num(opsCount)}</div><div class="sub">śr. ${fmt1(avgPerOp)} szt./op.</div></div>
-      <div class="kpi"><div class="lbl">Wskaźnik zwrotów</div><div class="val">${pctText(returnRate)}</div><div class="sub">${returnRate===null ? 'brak wydań w okresie' : 'zwrócone / wydane w okresie'}</div></div>
+      <div class="kpi"><div class="lbl">Wskaźnik zwrotów</div><div class="val">${pctText(returnRate)}</div><div class="sub">${returnRate===null ? 'brak wydań w okresie' : 'zwrócone / wydane w okresie'+(statsPeriod==='all' && (openingW||openingZ) ? ', ze stanem pocz.' : '')}</div></div>
       <div class="kpi"><div class="lbl">Niezwrócone łącznie</div><div class="val" style="color:${lifetimeOutstanding<=0?'var(--good)':(outstandingRatio>35?'var(--bad)':(outstandingRatio>15?'var(--info)':'var(--good)'))}">${num(lifetimeOutstanding)}</div><div class="sub">${lifetimeOutstanding>0 ? `${pctText(outstandingRatio)} wszystkich kiedykolwiek wydanych` : lifetimeOutstanding<0 ? `zwrócono o ${num(-lifetimeOutstanding)} szt. więcej, niż wydano` : 'wszystko rozliczone'}</div></div>
     </div>
 
@@ -1737,8 +1800,8 @@ function viewStats(){
           <thead><tr><th>Kurier</th><th class="num">Wydane</th><th class="num">Zwrócone</th><th class="num" title="Wydane minus zwrócone w wybranym okresie (bez stanu początkowego).">Różnica w okresie</th><th class="num" title="Ile palet kurier ma u siebie dzisiaj (łącznie ze stanem początkowym).">Bilans dziś</th><th class="num">Udział</th></tr></thead>
           <tbody>
             ${courierRows.map(c=>`
-              <tr class="clickable" data-action="open-courier" data-id="${escapeHtml(c.id)}" tabindex="0" role="button" aria-label="Szczegóły kuriera ${escapeHtml(c.name)}">
-                <td data-label="Kurier" style="display:flex;align-items:center;gap:9px;">${courierBadge(courierById(c.id)||{name:c.name,color:c.color},22)}${escapeHtml(c.name)}</td>
+              <tr class="clickable" data-action="open-courier" data-id="${escapeHtml(c.id)}">
+                <td data-label="Kurier"><button type="button" class="link-btn" id="cr-${escapeHtml(c.id)}" title="Szczegóły kuriera">${courierBadge(courierById(c.id)||{name:c.name,color:c.color},22)}${escapeHtml(c.name)}</button></td>
                 <td class="num" data-label="Wydane">${num(c.wydane)}</td>
                 <td class="num" data-label="Zwrócone">${num(c.zwrot)}</td>
                 <td class="num" data-label="Różnica w okresie" style="color:${c.bilans>0?'var(--bad)':(c.bilans<0?'var(--info)':'var(--good)')}">${c.bilans>0?'+':''}${num(c.bilans)}</td>
@@ -1910,7 +1973,7 @@ function viewCourierDetail(id){
       <div class="kpi"><div class="lbl">Zwrócone łącznie</div><div class="val" style="color:var(--good)">${num(zwrotAll)}</div></div>
       <div class="kpi"><div class="lbl">Aktualny bilans</div><div class="val" style="color:${bilansAll>0?'var(--bad)':(bilansAll<0?'var(--info)':'var(--good)')}">${bilansAll>0?'+':''}${num(bilansAll)}</div></div>
     </div>
-    ${(openingW||openingZ)? `<div style="font-size:12.5px; color:var(--text-faint); margin-bottom:18px;">w tym stan początkowy sprzed rozpoczęcia ewidencji: +${num(openingW)} wydanych, +${num(openingZ)} zwróconych — liczony w saldach, ale nie w statystykach tygodni i miesięcy</div>` : ''}
+    ${(openingW||openingZ)? `<div style="font-size:12.5px; color:var(--text-faint); margin-bottom:18px;">w tym stan początkowy sprzed rozpoczęcia ewidencji: wydane +${num(openingW)} szt., zwrócone +${num(openingZ)} szt. — liczony w saldach, ale nie w statystykach tygodni i miesięcy</div>` : ''}
 
     <div class="panel">
       <div class="panel-title">
@@ -1997,7 +2060,7 @@ function viewCourierDetail(id){
         const weeks = isOpen ? weeksOverlappingMonth(cdYear, m.idx) : [];
         return `
         <div class="acc-item">
-          <div class="acc-head ${isOpen?'open':''}" data-action="toggle-month" data-mk="${m.mk}" tabindex="0" role="button" aria-expanded="${isOpen}">
+          <div class="acc-head ${isOpen?'open':''}" id="acc-${m.mk}" data-action="toggle-month" data-mk="${m.mk}" tabindex="0" role="button" aria-expanded="${isOpen}">
             <div class="name">${ICONS.chevRight}${MONTHS_PL_FULL[m.idx]}</div>
             <div class="stats"><span class="w">${m.w? '+'+num(m.w):'—'}</span><span class="z">${m.z? '−'+num(m.z):'—'}</span></div>
           </div>
@@ -2010,7 +2073,7 @@ function viewCourierDetail(id){
               const w = txW.filter(t=>t.typ==='wydanie').reduce((s,t)=>s+t.ilosc,0);
               const z = txW.filter(t=>t.typ==='zwrot').reduce((s,t)=>s+t.ilosc,0);
               return `
-                <div class="week-row" data-action="toggle-week" data-wk="${wk}" tabindex="0" role="button" aria-expanded="${wkOpen}">
+                <div class="week-row" id="wk-${m.mk}-${wk}" data-action="toggle-week" data-wk="${wk}" tabindex="0" role="button" aria-expanded="${wkOpen}">
                   <div class="rng">${wkOpen?ICONS.chevRight.replace('class="chev"','class="chev" style="transform:rotate(90deg);width:13px;height:13px;"'):ICONS.chevRight.replace('class="chev"','class="chev" style="width:13px;height:13px;"')}${rangeLabel(wFrom, wTo)}</div>
                   <div class="stats"><span style="color:var(--bad)">${w?'+'+num(w):'—'}</span><span style="color:var(--good)">${z?'−'+num(z):'—'}</span></div>
                 </div>
@@ -2051,20 +2114,22 @@ function viewCouriers(){
 
     <div class="panel" style="padding:6px 18px;">
       ${balances.length? balances.map((b,i)=>`
-        <div class="courier-row" data-action="edit-courier" data-id="${escapeHtml(b.courier.id)}" style="cursor:pointer;" tabindex="0" role="button" aria-label="Edytuj kuriera ${escapeHtml(b.courier.name)}">
-          ${courierBadge(b.courier,40)}
-          <div class="info">
-            <div class="nm">${escapeHtml(b.courier.name)}</div>
-            <div class="meta">${isEnabled(b.courier)? 'aktywny':'nieaktywny'}</div>
-          </div>
+        <div class="courier-row" data-action="edit-courier" data-id="${escapeHtml(b.courier.id)}" style="cursor:pointer;">
+          <button type="button" class="link-btn row-main" id="ce-${escapeHtml(b.courier.id)}" title="Edytuj kuriera">
+            ${courierBadge(b.courier,40)}
+            <span class="info" style="display:block;">
+              <span class="nm" style="display:block;">${escapeHtml(b.courier.name)}</span>
+              <span class="meta" style="display:block;">${isEnabled(b.courier)? 'aktywny':'nieaktywny'}</span>
+            </span>
+          </button>
           <div class="stats"><span style="color:var(--bad)">↑${num(b.wydane)}</span><span style="color:var(--good)">↓${num(b.zwrocone)}</span><span style="color:${b.bilans>0?'var(--bad)':(b.bilans<0?'var(--info)':'var(--good)')}">${b.bilans>0?'+':''}${num(b.bilans)}</span></div>
           <div class="actions">
             <div style="display:flex; flex-direction:column; gap:2px;">
-              <button class="icon-btn btn-sm" data-action="move-courier" data-id="${b.courier.id}" data-dir="-1" title="Wyżej" ${i===0?'disabled':''} style="height:22px;width:26px;opacity:${i===0?'.25':'1'};">${ICONS.chevRight.replace('m9 6 6 6-6 6','m6 15 6-6 6 6').replace('class="chev"','style="width:13px;height:13px;transform:none;"')}</button>
-              <button class="icon-btn btn-sm" data-action="move-courier" data-id="${b.courier.id}" data-dir="1" title="Niżej" ${i===balances.length-1?'disabled':''} style="height:22px;width:26px;opacity:${i===balances.length-1?'.25':'1'};">${ICONS.chevRight.replace('m9 6 6 6-6 6','m6 9 6 6 6-6').replace('class="chev"','style="width:13px;height:13px;transform:none;"')}</button>
+              <button class="icon-btn btn-sm" id="mv-up-${escapeHtml(b.courier.id)}" data-action="move-courier" data-id="${escapeHtml(b.courier.id)}" data-dir="-1" title="Wyżej" aria-label="Przesuń ${escapeHtml(b.courier.name)} wyżej" ${i===0?'disabled':''} style="height:22px;width:26px;padding:0;opacity:${i===0?'.25':'1'};">${ICONS.chevRight.replace('m9 6 6 6-6 6','m6 15 6-6 6 6').replace('class="chev"','style="width:13px;height:13px;transform:none;"')}</button>
+              <button class="icon-btn btn-sm" id="mv-down-${escapeHtml(b.courier.id)}" data-action="move-courier" data-id="${escapeHtml(b.courier.id)}" data-dir="1" title="Niżej" aria-label="Przesuń ${escapeHtml(b.courier.name)} niżej" ${i===balances.length-1?'disabled':''} style="height:22px;width:26px;padding:0;opacity:${i===balances.length-1?'.25':'1'};">${ICONS.chevRight.replace('m9 6 6 6-6 6','m6 9 6 6 6-6').replace('class="chev"','style="width:13px;height:13px;transform:none;"')}</button>
             </div>
             <label class="switch" title="${isEnabled(b.courier)?'Aktywny':'Nieaktywny'}" data-action="stop">
-              <input type="checkbox" data-action="toggle-courier" data-id="${b.courier.id}" ${isEnabled(b.courier)?'checked':''}>
+              <input type="checkbox" id="tg-${escapeHtml(b.courier.id)}" data-action="toggle-courier" data-id="${escapeHtml(b.courier.id)}" ${isEnabled(b.courier)?'checked':''} aria-label="${escapeHtml(b.courier.name)} aktywny">
               <span class="slider"></span>
             </label>
             <span style="color:var(--text-faint);">${ICONS.chevRight.replace('class="chev"','style="width:16px;height:16px;"')}</span>
@@ -2138,7 +2203,7 @@ function viewSettings(){
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
           <button type="button" class="btn btn-primary" data-action="backup-export">${ICONS.download}Pobierz kopię (.json)</button>
           <button type="button" class="btn" data-action="backup-import">${ICONS.upload}Wczytaj kopię z pliku</button>
-          <input type="file" id="backupFile" accept="application/json,.json" class="visually-hidden" aria-label="Plik kopii zapasowej">
+          <input type="file" id="backupFile" accept="application/json,.json" class="visually-hidden" tabindex="-1" aria-hidden="true">
         </div>
         <div class="hint-line" style="margin-top:10px;">${lb ? `Ostatnia kopia pobrana na tym urządzeniu: ${escapeHtml(lb)}.` : 'Na tym urządzeniu nie pobrano jeszcze kopii.'}</div>
       </div>
@@ -2216,11 +2281,19 @@ function parseBackup(text){
 }
 
 let importRunning = false;
+// a default courier only auto-created on first start and never changed in any way
+function isUntouchedDefault(c){
+  const d = DEFAULT_COURIERS.find(x=>x.id===c.id);
+  return !!d && !c.custom && c.name===d.name && (c.color||'').toLowerCase()===d.color.toLowerCase() && c.enabled!==false && !c.noLogo && !c.logoAssetId
+    && c.order===d.order && !c.openingWydane && !c.openingZwrot && !transactions.some(t=>t.kurierId===c.id);
+}
+function isFreshInstall(){ return !transactions.length && !invalidTx.length && couriers.every(isUntouchedDefault); }
 async function importBackupFile(file){
   if(!file) return;
   if(!historyComplete){ toast('Poczekaj chwilę, aż wczyta się cała historia', true); return; }
   let parsed;
   try{ parsed = parseBackup(await file.text()); }catch(e){ toast(e.message, true); return; }
+  const fresh = isFreshInstall();
   const txIds = new Set(transactions.map(t=>t.id));
   const common = parsed.transactions.filter(t=>txIds.has(t.id)).length;
   const dates = parsed.transactions.map(t=>t.data.data).sort();
@@ -2229,8 +2302,8 @@ async function importBackupFile(file){
     <h2>Wczytać kopię?</h2>
     <div class="modal-sub">Plik${when && !isNaN(when) ? ` z ${when.toLocaleDateString('pl-PL')} ${when.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})}` : ''}: kurierzy ${num(parsed.couriers.length)}, ${opsLabel(parsed.transactions.length)}${dates.length ? ` (${fmtDate(dates[0])} – ${fmtDate(dates[dates.length-1])})` : ''}.${parsed.skipped ? ` Pominięto uszkodzone wpisy: ${num(parsed.skipped)}.` : ''}<br>Teraz w aplikacji: kurierzy ${num(couriers.length)}, ${opsLabel(transactions.length)}; te same operacje w obu: ${num(common)}.</div>
     <div style="display:flex; flex-direction:column; gap:10px;">
-      <label class="import-opt"><input type="radio" name="importMode" value="merge" ${transactions.length ? 'checked' : ''}><span><b>Połącz</b> — dodaj z pliku tylko to, czego tu brakuje. Nic nie zostanie usunięte ani nadpisane.</span></label>
-      <label class="import-opt"><input type="radio" name="importMode" value="replace" ${transactions.length ? '' : 'checked'}><span><b>Zastąp wszystko</b> — usuń obecnych kurierów i operacje i odtwórz dokładnie stan z pliku.</span></label>
+      <label class="import-opt"><input type="radio" name="importMode" value="merge" ${fresh ? '' : 'checked'}><span><b>Połącz</b> — dodaj z pliku tylko to, czego tu brakuje. Nic nie zostanie usunięte ani nadpisane.</span></label>
+      <label class="import-opt"><input type="radio" name="importMode" value="replace" ${fresh ? 'checked' : ''}><span><b>Zastąp wszystko</b> — usuń obecnych kurierów i operacje i odtwórz dokładnie stan z pliku.</span></label>
     </div>
     <div class="modal-close-row"><button type="button" class="btn" data-action="close-modal">Anuluj</button><button type="button" class="btn btn-primary" id="importGo">${ICONS.upload}Wczytaj</button></div>
   `);
@@ -2239,7 +2312,7 @@ async function importBackupFile(file){
     const mode = (document.querySelector('#modalRoot input[name=importMode]:checked')||{}).value || 'merge';
     closeModal();
     if(mode==='replace'){
-      const ok = !transactions.length || await confirmDialog('Zastąpić wszystkie dane?', `Obecni kurierzy i operacje (${opsLabel(transactions.length)}) zostaną usunięci i zastąpieni zawartością pliku. Jeśli nie masz kopii obecnych danych, anuluj i najpierw ją pobierz.`, {okLabel:'Zastąp'});
+      const ok = isFreshInstall() || await confirmDialog('Zastąpić wszystkie dane?', `Obecni kurierzy (${num(couriers.length)}, razem ze stanem początkowym i ustawieniami) i operacje (${opsLabel(transactions.length)}) zostaną usunięci i zastąpieni zawartością pliku. Jeśli nie masz kopii obecnych danych, anuluj i najpierw ją pobierz.`, {okLabel:'Zastąp'});
       if(!ok) return;
     }
     runImport(parsed, mode);
@@ -2252,11 +2325,12 @@ async function runImport(parsed, mode){
   // a default courier that was only auto-created (never renamed, used, given a logo or an opening
   // balance) is replaced by the file's version even in "Połącz" mode — otherwise importing into a
   // fresh install would silently drop names, opening balances and on/off settings from the backup
-  const untouchedDefault = (c)=>{ const d = DEFAULT_COURIERS.find(x=>x.id===c.id); return d && !c.custom && c.name===d.name && !c.logoAssetId && !c.openingWydane && !c.openingZwrot && !transactions.some(t=>t.kurierId===c.id); };
-  const addC = parsed.couriers.filter(c=> mode==='replace' || !cById.has(c.id) || untouchedDefault(cById.get(c.id)));
+  const addC = parsed.couriers.filter(c=> mode==='replace' || !cById.has(c.id) || isUntouchedDefault(cById.get(c.id)));
   if(mode==='merge'){
-    let nextOrder = Math.max(0, ...couriers.filter(c=>!addC.some(a=>a.id===c.id)).map(c=>Number.isFinite(c.order)?c.order:0));
-    addC.forEach(c=>{ if(!cById.has(c.id) && couriers.some(x=>x.order===c.data.order)) c.data.order = ++nextOrder; });
+    // every courier keeps a distinct place in the order
+    const taken = new Set(couriers.filter(c=>!addC.some(a=>a.id===c.id)).map(c=>c.order));
+    let nextOrder = Math.max(0, ...[...taken].filter(Number.isFinite));
+    addC.forEach(c=>{ if(taken.has(c.data.order) || !Number.isFinite(c.data.order)) c.data.order = ++nextOrder; taken.add(c.data.order); nextOrder = Math.max(nextOrder, c.data.order); });
   }
   const addT = parsed.transactions.filter(t=> mode==='replace' || !txById.has(t.id));
   if(info.mode==='claude'){
@@ -2291,7 +2365,20 @@ async function runImport(parsed, mode){
       done++; if(done%5===0 || done===writes.length) progress();
     }
   };
-  await Promise.all(Array.from({length: Math.min(6, Math.max(1, writes.length))}, worker));
+  if(typeof db.batch==='function'){
+    // one durable transaction per 400 writes instead of one per document (much faster, atomic per chunk)
+    while(queue.length){
+      const chunk = queue.splice(0, 400);
+      try{
+        const b = db.batch();
+        chunk.forEach(w=>{ const ref = db.collection(w.coll).doc(w.id); if(w.op==='delete') b.delete(ref); else b.set(ref, w.data); });
+        await b.commit();
+      }catch(e){ failed += chunk.length; console.error('import batch', e); }
+      done += chunk.length; progress();
+    }
+  } else {
+    await Promise.all(Array.from({length: Math.min(6, Math.max(1, writes.length))}, worker));
+  }
   // document counters never go backwards
   const maxOf = (prefix)=> Math.max(0, ...parsed.transactions.filter(t=>(t.data.nr||'').startsWith(prefix)).map(t=>docketNum(t.data.nr)));
   const newCounters = {
@@ -2325,7 +2412,7 @@ async function handleIssueAction(btn){
     confirmModal('Usunąć operację?', `${escapeHtml(buildDocketMap()[t.id]||'')} — ${escapeHtml(txCourierName(t))}, ${palet(t.ilosc)}, ${fmtDate(t.data)}.`, ()=>deleteTransaction(id));
   }
   else if(act==='delete-raw'){
-    confirmModal('Usunąć uszkodzony wpis?', 'Wpis nie jest liczony w bilansach. Usunięcia nie można cofnąć.', async ()=>{ try{ await db.collection('transactions').doc(id).delete(); olderTx.delete(id); mergeTransactions(); render(); toast('Usunięto uszkodzony wpis'); }catch(e){ toast('Nie udało się usunąć wpisu', true); } });
+    confirmModal('Usunąć uszkodzony wpis?', 'Wpis nie jest liczony w bilansach. Usunięcia nie można cofnąć.', async ()=>{ try{ await db.collection('transactions').doc(id).delete(); olderTx.delete(id); mergeTransactions(); render(); noteLocalWrite(); toast('Usunięto uszkodzony wpis'); }catch(e){ toast('Nie udało się usunąć wpisu', true); } });
   }
   else if(act==='renumber'){
     btn.disabled = true;
@@ -2333,7 +2420,7 @@ async function handleIssueAction(btn){
       for(const tid of (btn.dataset.ids||'').split(',').filter(Boolean)){
         const t = transactions.find(x=>x.id===tid); if(!t) continue;
         const nr = await allocDocket(t.typ);
-        await db.collection('transactions').doc(tid).update({nr});
+        await db.collection('transactions').doc(tid).update({nr, nrAt: Date.now()});
         if(olderTx.has(tid)) olderTx.set(tid, {...olderTx.get(tid), nr});
       }
       mergeTransactions(); render(); toast('Nadano nowe numery dokumentów');
@@ -2381,7 +2468,7 @@ function trapTab(container, e){
 }
 function openModal(html){
   modalCancelHook = null;
-  if(!document.getElementById('modalRoot').innerHTML) modalOpener = document.activeElement;
+  if(!document.getElementById('modalRoot').innerHTML) modalOpener = describeEl(document.activeElement);
   document.getElementById('modalRoot').innerHTML = `<div class="modal-overlay" id="modalOverlay"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">${html}</div></div>`;
   const modal = document.querySelector('#modalRoot .modal');
   const h = modal.querySelector('h2'); if(h) h.id = 'modalTitle';
@@ -2394,7 +2481,19 @@ function closeModal(){
   modalCancelHook = null; document.getElementById('modalRoot').innerHTML='';
   if(!document.getElementById('printRoot').innerHTML) setBackgroundInert(false);
   const back = modalOpener; modalOpener = null;
-  if(back && back.isConnected && typeof back.focus==='function') back.focus({preventScroll:true});
+  restoreFocus(back);
+}
+// remember an element so focus can return to it even after a re-render replaced it
+function describeEl(el){ if(!el || el===document.body) return null; return {el, id:el.id||'', action:el.dataset ? el.dataset.action||'' : '', dataId:el.dataset ? el.dataset.id||'' : ''}; }
+function restoreFocus(d){
+  let t = null;
+  if(d){
+    if(d.el && d.el.isConnected) t = d.el;
+    else if(d.id) t = document.getElementById(d.id);
+    if(!t && d.action){ t = [...document.querySelectorAll(`[data-action="${CSS.escape(d.action)}"]`)].find(x=>!d.dataId || x.dataset.id===d.dataId) || null; }
+  }
+  if(t && typeof t.focus==='function' && t.offsetParent!==null){ t.focus({preventScroll:true}); return; }
+  focusHeading();
 }
 function dismissModal(){ if(importRunning) return; const h = modalCancelHook; if(h){ modalCancelHook = null; h(); } else closeModal(); }
 document.addEventListener('keydown', (e)=>{
@@ -2437,7 +2536,7 @@ document.head.insertAdjacentHTML('beforeend', `<style id="printDocCss">${PRINT_D
 
 function openPrint(title, bodyHtml, filename){
   const root = document.getElementById('printRoot');
-  if(!root.innerHTML) printOpener = document.activeElement;
+  if(!root.innerHTML) printOpener = describeEl(document.activeElement);
   root.innerHTML = `<div class="print-overlay" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
     <div class="print-toolbar">
       <b style="font-size:14px;">${escapeHtml(title)}</b>
@@ -2466,7 +2565,7 @@ function closePrint(){
   document.getElementById('printRoot').innerHTML = '';
   if(!document.getElementById('modalRoot').innerHTML) setBackgroundInert(false);
   const back = printOpener; printOpener = null;
-  if(back && back.isConnected && typeof back.focus==='function') back.focus({preventScroll:true});
+  restoreFocus(back);
 }
 
 function docSheet(t, nr, copyLabel){
@@ -2492,20 +2591,29 @@ function printOperation(id){
   openPrint(`${nr||'Dokument'} — wydruk`, docSheet(t, nr, 'Oryginał') + `<div class="doc-cut"><span>✂ tu oderwij — kopia dla kuriera</span></div>` + docSheet(t, nr, 'Kopia'), `${nr||'dokument'}.html`);
 }
 
+function bindSwatches(groupId, onSelect){
+  const items = [...document.querySelectorAll(`#${groupId} .swatch`)];
+  const pick = (sw, focus)=>{ items.forEach(s=>{ const on = s===sw; s.classList.toggle('sel', on); s.setAttribute('aria-checked', String(on)); s.tabIndex = on ? 0 : -1; }); if(focus) sw.focus(); onSelect(sw.dataset.color); };
+  items.forEach((sw,i)=>{
+    sw.addEventListener('click', ()=>pick(sw, false));
+    sw.addEventListener('keydown', (e)=>{
+      const d = (e.key==='ArrowRight' || e.key==='ArrowDown') ? 1 : (e.key==='ArrowLeft' || e.key==='ArrowUp') ? -1 : 0;
+      if(d){ e.preventDefault(); pick(items[(i+d+items.length)%items.length], true); }
+    });
+  });
+}
 function openAddCourierModal(){
   openModal(`
     <h2>Dodaj kuriera</h2>
     <div class="modal-sub">Nowy przewoźnik pojawi się na pulpicie i w formularzu nowej operacji. Logo dodasz później z listy kurierów.</div>
     <form id="addCourierForm">
       <div class="field" style="margin-bottom:12px;"><label for="addCourierName">Nazwa kuriera <span class="req">*</span></label><input type="text" id="addCourierName" name="name" maxlength="60" placeholder="np. Fedex, Raben, poczta własna..." required></div>
-      <div class="field"><span class="field-label" id="swatchLbl" style="font-size:12.5px; font-weight:600; color:var(--text-dim);">Kolor etykiety</span><div class="swatch-picker" id="swatchPicker" role="radiogroup" aria-labelledby="swatchLbl">${COURIER_COLORS.map((c,i)=>`<button type="button" class="swatch ${i===0?'sel':''}" style="background:${c}" data-color="${c}" role="radio" aria-checked="${i===0}" aria-label="Kolor ${i+1}"></button>`).join('')}</div></div>
+      <div class="field"><span class="field-label" id="swatchLbl" style="font-size:12.5px; font-weight:600; color:var(--text-dim);">Kolor etykiety</span><div class="swatch-picker" id="swatchPicker" role="radiogroup" aria-labelledby="swatchLbl">${COURIER_COLORS.map((c,i)=>`<button type="button" class="swatch ${i===0?'sel':''}" style="background:${c}" data-color="${c}" role="radio" aria-checked="${i===0}" tabindex="${i===0?0:-1}" aria-label="${COURIER_COLOR_NAMES[i]}"></button>`).join('')}</div></div>
       <div class="modal-close-row"><button type="button" class="btn" data-action="close-modal">Anuluj</button><button type="submit" class="btn btn-primary">Dodaj kuriera</button></div>
     </form>
   `);
   let selColor = COURIER_COLORS[0];
-  document.querySelectorAll('#swatchPicker .swatch').forEach(sw=>{
-    sw.addEventListener('click', ()=>{ document.querySelectorAll('#swatchPicker .swatch').forEach(s=>{ s.classList.remove('sel'); s.setAttribute('aria-checked','false'); }); sw.classList.add('sel'); sw.setAttribute('aria-checked','true'); selColor = sw.dataset.color; });
-  });
+  bindSwatches('swatchPicker', (col)=>{ selColor = col; });
   document.getElementById('addCourierForm').addEventListener('submit', async (e)=>{
     e.preventDefault(); const name = e.target.name.value.trim(); if(!name) return;
     await createCourier(name, selColor); closeModal();
@@ -2526,11 +2634,11 @@ function openEditCourierModal(id){
       </div>
       <div style="font-size:12px; color:var(--text-faint);">Stuknij logo, aby wgrać nowe</div>
       ${hasLogo? `<button type="button" class="btn btn-sm btn-ghost" data-action="modal-remove-logo" data-id="${c.id}">${ICONS.x}Usuń obecne logo</button>` : ''}
-      <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="visually-hidden" id="editLogoInput" data-id="${c.id}">
+      <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="visually-hidden" id="editLogoInput" data-id="${escapeHtml(c.id)}" tabindex="-1" aria-hidden="true">
     </div>
     <form id="editCourierForm">
       <div class="field" style="margin-bottom:12px;"><label for="editCourierName">Nazwa</label><input type="text" id="editCourierName" name="name" maxlength="60" value="${escapeHtml(c.name)}" required></div>
-      <div class="field" style="margin-bottom:14px;"><span id="editSwatchLbl" style="font-size:12.5px; font-weight:600; color:var(--text-dim);">Kolor etykiety</span><div class="swatch-picker" id="editSwatchPicker" role="radiogroup" aria-labelledby="editSwatchLbl">${COURIER_COLORS.map((col,i)=>{ const on = col.toLowerCase()===(c.color||'').toLowerCase(); return `<button type="button" class="swatch ${on?'sel':''}" style="background:${col}" data-color="${col}" role="radio" aria-checked="${on}" aria-label="Kolor ${i+1}"></button>`; }).join('')}</div></div>
+      <div class="field" style="margin-bottom:14px;"><span id="editSwatchLbl" style="font-size:12.5px; font-weight:600; color:var(--text-dim);">Kolor etykiety</span><div class="swatch-picker" id="editSwatchPicker" role="radiogroup" aria-labelledby="editSwatchLbl">${COURIER_COLORS.map((col,i)=>{ const on = col.toLowerCase()===(c.color||'').toLowerCase(); return `<button type="button" class="swatch ${on?'sel':''}" style="background:${col}" data-color="${col}" role="radio" aria-checked="${on}" tabindex="${on || (!COURIER_COLORS.some(x=>x.toLowerCase()===(c.color||'').toLowerCase()) && i===0) ? 0 : -1}" aria-label="${COURIER_COLOR_NAMES[i]}"></button>`; }).join('')}</div></div>
       <div style="display:flex; align-items:center; justify-content:space-between; padding:2px 0 16px;">
         <label for="editEnabled" style="font-size:13px; font-weight:600; color:var(--text-dim);">Widoczny na pulpicie</label>
         <label class="switch"><input type="checkbox" id="editEnabled" ${isEnabled(c)?'checked':''} aria-label="Widoczny na pulpicie"><span class="slider"></span></label>
@@ -2566,17 +2674,18 @@ function openEditCourierModal(id){
     await uploadCourierLogo(id, file);
   });
   const removeLogoBtn = document.querySelector('[data-action="modal-remove-logo"]');
-  if(removeLogoBtn) removeLogoBtn.addEventListener('click', async ()=>{ await removeCourierLogo(id); closeModal(); openEditCourierModal(id); });
+  const showBadge = ()=>{ const prev = document.getElementById('editLogoPreview'); if(!prev) return; const old = prev.querySelector('img,.badge-init'); if(old) old.remove(); prev.insertAdjacentHTML('afterbegin', courierBadge(courierById(id), 76)); };
+  if(removeLogoBtn) removeLogoBtn.addEventListener('click', async ()=>{
+    if(await removeCourierLogo(id)){ couriers = couriers.map(x=>x.id===id ? {...x, logoAssetId:null, noLogo:true} : x); showBadge(); removeLogoBtn.remove(); }
+  });
 
   let selColor = c.color || COURIER_COLORS[0];
-  document.querySelectorAll('#editSwatchPicker .swatch').forEach(sw=>{
-    sw.addEventListener('click', ()=>{ document.querySelectorAll('#editSwatchPicker .swatch').forEach(s=>{ s.classList.remove('sel'); s.setAttribute('aria-checked','false'); }); sw.classList.add('sel'); sw.setAttribute('aria-checked','true'); selColor = sw.dataset.color; });
-  });
+  bindSwatches('editSwatchPicker', (col)=>{ selColor = col; });
 
   document.querySelector('[data-action="modal-delete-courier"]').addEventListener('click', (e)=>{
     const name = e.currentTarget.dataset.name;
     closeModal();
-    const openingNote = (c.openingWydane||c.openingZwrot) ? `<br><br><b>Uwaga:</b> stan początkowy tego kuriera (+${num(c.openingWydane||0)} wydanych, +${num(c.openingZwrot||0)} zwróconych) zostanie usunięty razem z nim, co zmieni sumę palet u kurierów. Jeśli chcesz go tylko ukryć, wyłącz „Widoczny na pulpicie”.` : '';
+    const openingNote = (c.openingWydane||c.openingZwrot) ? `<br><br><b>Uwaga:</b> stan początkowy tego kuriera (wydane +${num(c.openingWydane||0)} szt., zwrócone +${num(c.openingZwrot||0)} szt.) zostanie usunięty razem z nim, co zmieni sumę palet u kurierów. Jeśli chcesz go tylko ukryć, wyłącz „Widoczny na pulpicie”.` : '';
     confirmModal('Usunąć kuriera?', `Kurier „${escapeHtml(name)}” zostanie usunięty z listy. Historia jego operacji pozostanie zachowana.${openingNote}`, ()=>deleteCourier(id));
   });
 
@@ -2618,6 +2727,7 @@ function confirmDialog(title, msg, opts){
 
 /* ---------------------------- ACTIONS ---------------------------- */
 async function createCourier(name, color){
+  if(!historyComplete){ toast('Trwa wczytywanie historii — spróbuj za chwilę', true); return; }
   name = String(name).trim().replace(/\s+/g,' ').slice(0,60);
   const same = couriers.find(c=>(c.name||'').trim().toLowerCase()===name.toLowerCase());
   if(same){ toast(`Kurier „${same.name}” już jest na liście`, true); return; }
@@ -2652,12 +2762,13 @@ async function uploadCourierLogo(id, file){
   try{
     const res = await assetsApi.upload(file);
     await db.collection('couriers').doc(id).update({logoAssetId: res.id, noLogo: false});
+    couriers = couriers.map(x=>x.id===id ? {...x, logoAssetId:res.id, noLogo:false} : x);
     toast('Logo zaktualizowane');
   }catch(e){ console.error(e); toast('Nie udało się przesłać logo', true); }
 }
 async function removeCourierLogo(id){
-  try{ await db.collection('couriers').doc(id).update({logoAssetId: null, noLogo: true}); toast('Logo usunięte — kurier ma teraz inicjały'); }
-  catch(e){ console.error(e); toast('Nie udało się usunąć logo', true); }
+  try{ await db.collection('couriers').doc(id).update({logoAssetId: null, noLogo: true}); toast('Logo usunięte — kurier ma teraz inicjały'); return true; }
+  catch(e){ console.error(e); toast('Nie udało się usunąć logo', true); return false; }
 }
 async function saveTransaction(form){
   if(!historyComplete){ toast('Trwa wczytywanie historii — spróbuj za chwilę', true); return false; }
@@ -2724,23 +2835,31 @@ async function saveTransaction(form){
   const payload = {kurierId, kurierNazwa, typ, ilosc, data, uwagi};
   // an operation dated on/before the oldest day of the live window is not delivered by the live
   // subscription — keep our own copy in olderTx so it counts immediately
-  const keepOlder = (id, doc)=>{ if(olderTx.has(id) || (olderBoundary && doc.data <= olderBoundary)){ olderTx.set(id, {...doc, id}); mergeTransactions(); render(true); } };
+  const keepOlder = (id, doc)=>{
+    if(olderBoundary && doc.data <= olderBoundary) olderTx.set(id, {...doc, id});
+    else if(olderTx.has(id)){ olderTx.delete(id); applyLocalTx(id, doc); }   // moved into the live window: the live subscription owns it now
+    else return;
+    mergeTransactions(); render(true);
+  };
   let allocated = null;
   try{
     if(orig){
-      if(orig.typ!==payload.typ) allocated = payload.nr = await allocDocket(payload.typ); // WZ ↔ PZ: new number of the right kind
+      if(orig.typ!==payload.typ){ allocated = payload.nr = await allocDocket(payload.typ); payload.nrAt = Date.now(); } // WZ ↔ PZ: new number of the right kind
       await db.collection('transactions').doc(editId).update(payload);
       applyLocalTx(editId, {...orig, ...payload});
       keepOlder(editId, {...orig, ...payload});
+      noteLocalWrite();
       if(allocated) await ensureUniqueDocket(editId, allocated, payload.typ);
       toast('Operacja zaktualizowana'+(payload.nr? ` — nowy numer ${payload.nr}`:''));
     }
     else {
       payload.createdAt = Date.now();
       allocated = payload.nr = await allocDocket(payload.typ);
+      payload.nrAt = Date.now();
       const ref = await db.collection('transactions').add(payload);
       if(!(olderBoundary && payload.data <= olderBoundary)) applyLocalTx(ref.id, payload);
       keepOlder(ref.id, payload);
+      noteLocalWrite();
       const finalNr = await ensureUniqueDocket(ref.id, payload.nr, payload.typ);
       toast((payload.typ==='wydanie'? 'Zarejestrowano wydanie palet':'Zarejestrowano zwrot palet')+` (${finalNr})`);
     }
@@ -2758,11 +2877,13 @@ async function deleteTransaction(id){
   const backup = t ? {...t} : null; if(backup) delete backup.id;
   try{
     await db.collection('transactions').doc(id).delete();
-    if(olderTx.delete(id)){ mergeTransactions(); render(true); }
+    const li = liveTx.findIndex(x=>x.id===id); if(li>-1) liveTx.splice(li,1);
+    olderTx.delete(id); mergeTransactions(); render(true); noteLocalWrite();
     toast(`Operacja ${backup && backup.nr ? backup.nr+' ' : ''}usunięta`, false, backup ? {label:'Cofnij', onClick: async ()=>{
       try{
         await db.collection('transactions').doc(id).set(backup);
-        if(wasOlder){ olderTx.set(id, {id, ...backup}); mergeTransactions(); render(true); }
+        if(wasOlder) olderTx.set(id, {id, ...backup}); else applyLocalTx(id, backup);
+        mergeTransactions(); render(true); noteLocalWrite();
         toast('Przywrócono operację');
       }catch(e){ console.error(e); toast('Nie udało się przywrócić operacji', true); }
     }} : null);
@@ -2786,12 +2907,23 @@ function exportCsv(){
 // complete, plausible date (or an emptied field) — immediately, or when the field loses focus.
 function bindDateInput(input, apply){
   if(!input) return;
-  let last = input.value;
+  let last = input.value, typed = false;
   const ok = (v)=> v==='' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && v>='2000-01-01' && v<='2099-12-31');
-  const go = ()=>{ const v = input.value; if(v===last || !ok(v)) return; last = v; apply(v); };
-  input.addEventListener('change', go);
-  input.addEventListener('blur', go);
-  input.addEventListener('keydown', (e)=>{ if(e.key==='Enter') go(); });
+  const go = ()=>{
+    if(!input.isConnected) return;
+    if(input.validity && input.validity.badInput) return;   // a segment is half-typed: not a real value yet
+    const v = input.value; typed = false;
+    if(v===last || !ok(v)) return;
+    last = v;
+    setTimeout(()=>apply(v), 0);                             // never re-render from inside an input event
+  };
+  // typing applies on Enter / leaving the field; the calendar picker or the clear button apply at once
+  input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); go(); } else if(e.key!=='Tab' && e.key!=='Shift') typed = true; });
+  input.addEventListener('change', ()=>{ if(!typed) go(); });
+  input.addEventListener('blur', ()=>{
+    go();
+    if(pendingDataRender){ pendingDataRender = false; setTimeout(()=>{ if(!(document.activeElement && document.activeElement.matches && document.activeElement.matches('input[type=date]'))) render(true); }, 0); }
+  });
 }
 function bindViewEvents(){
   const main = document.getElementById('main');

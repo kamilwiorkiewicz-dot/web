@@ -16,6 +16,23 @@ zakoncz() {
   exit "${1:-0}"
 }
 
+# Skrypt skopiowany albo uruchomiony bez reszty folderu (np. prosto z archiwum ZIP)
+brak_plikow() {
+  echo
+  echo "Brakuje plików aplikacji obok tego skryptu (nie ma: $1)."
+  echo "Najczęściej znaczy to, że archiwum ZIP nie zostało rozpakowane w całości"
+  echo "albo ten plik skopiowano bez reszty folderu."
+  echo "Co zrobić: rozpakuj CAŁE archiwum (dwuklik na pliku .zip w Finderze),"
+  echo "otwórz rozpakowany folder i uruchom „Uruchom serwer (Mac).command” z niego."
+  zakoncz 1
+}
+for plik in server.js runtime-lokalny.js fonts/fonts.css; do
+  [ -f "$plik" ] || brak_plikow "$plik"
+done
+if [ ! -f index.html ] && { [ ! -f narzedzia/zbuduj.js ] || [ ! -f zrodlo/aplikacja.html ]; }; then
+  brak_plikow "index.html"
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   echo
   echo "Nie znaleziono programu Node.js — jest potrzebny do uruchomienia serwera."

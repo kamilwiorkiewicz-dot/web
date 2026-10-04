@@ -6,6 +6,15 @@ chcp 65001 >nul
 title Ewidencja Palet - serwer
 cd /d "%~dp0"
 
+rem Plik uruchomiony prosto z archiwum ZIP (Windows wypakowuje wtedy do folderu tymczasowego tylko ten
+rem jeden plik) albo skopiowany bez reszty folderu: brakuje plikow aplikacji.
+set "BRAK="
+if not exist "server.js" set "BRAK=server.js"
+if not exist "runtime-lokalny.js" set "BRAK=runtime-lokalny.js"
+if not exist "fonts\fonts.css" set "BRAK=fonts\fonts.css"
+if not exist "index.html" if not exist "narzedzia\zbuduj.js" set "BRAK=index.html"
+if defined BRAK goto brak_plikow
+
 where node >nul 2>nul
 if errorlevel 1 goto brak_node
 
@@ -19,6 +28,19 @@ if not defined PORT set "PORT=8080"
 node server.js --otworz
 if errorlevel 1 goto koniec_blad
 goto :eof
+
+:brak_plikow
+echo.
+echo Brakuje plikow aplikacji obok tego pliku (nie ma: %BRAK%).
+echo "%~dp0" | find /i ".zip" >nul
+if not errorlevel 1 echo Ten plik zostal uruchomiony prosto z archiwum ZIP, bez jego rozpakowania.
+echo.
+echo Co zrobic:
+echo  1. Zamknij to okno.
+echo  2. Kliknij pobrane archiwum ZIP prawym przyciskiem myszy i wybierz
+echo     "Wyodrebnij wszystkie..." (Extract All), potem "Wyodrebnij".
+echo  3. Otworz rozpakowany folder i dopiero z niego uruchom "Uruchom serwer (Windows).bat".
+goto koniec_blad
 
 :brak_node
 echo.

@@ -1002,3 +1002,333 @@ test('(e4) strona z „zwykłego” serwera WWW bez API → tryb przeglądarki (
     assert.deepEqual(A.bledy.filter((b) => !/404/.test(b)), []);
   } finally { await ctx.close(); }
 });
+
+/* ======================================================================
+   (g) poprawki po QA wersji lokalnej: numeracja WZ/PZ przy nieaktualnym lustrze (tryb serwera i przeglądarki),
+       pasek „brak połączenia”, dostarczenia migawek, dzierżawa w trybie localStorage, komunikat o odtworzeniu
+       bazy, adres /index.html/
+   ====================================================================== */
+const { stworzSerwer, konfiguracja } = require('../server.js');
+const { jsonPost: postJson } = require('./pomocnicy-serwera');
+/** Serwer w tym samym procesie (dostęp do strumieni SSE i do zapisu na dysk — np. wolny dysk). */
+async function serwerWProcesie(env = {}) {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const s = stworzSerwer(konfiguracja({ HOST: '127.0.0.1', PORT: '0', DATA_DIR: dane, ...env }, []), { warn: () => {}, error: () => {} });
+  s.start();
+  await new Promise((r) => s.serwer.listen(0, '127.0.0.1', r));
+  const port = s.serwer.address().port;
+  return {
+    ...s, dane, port, url: `http://127.0.0.1:${port}/`,
+    async zamknij() { s.zatrzymaj(); if (s.serwer.closeAllConnections) s.serwer.closeAllConnections(); await new Promise((r) => s.serwer.close(r)); },
+  };
+}
+// kurierzy i liczniki od razu na serwerze (bez zakładania domyślnych przez aplikację)
+async function zasiej(port) {
+  await postJson(port, '/api/batch', { writes: [
+    { op: 'set', coll: 'couriers', id: 'dpd', data: { name: 'DPD', order: 1, color: '#DC0032', custom: false, enabled: true } },
+    { op: 'set', coll: 'couriers', id: 'gls', data: { name: 'GLS', order: 2, color: '#061AB1', custom: false, enabled: true } },
+    { op: 'set', coll: 'meta', id: 'settings', data: { seeded: true } },
+    { op: 'set', coll: 'meta', id: 'counters', data: { wz: 0, pz: 0 } },
+  ] });
+}
+async function wypelnij(page, { kurier = 'dpd', typ = 'wydanie', ilosc }) {
+  await idzDo(page, 'new');
+  await page.waitForSelector('#opForm');
+  await page.click(`#opForm label.opt-${typ}`);
+  await page.selectOption('#kurierSelect', kurier);
+  await page.fill('#opForm input[name="ilosc"]', String(ilosc));
+}
+// czeka na wynik zapisu (komunikat), zwraca jego treść i sprząta komunikaty
+async function wynikZapisu(page, ms = 60000) {
+  await page.waitForFunction(() => [...document.querySelectorAll('#toastRoot .toast')].some((t) => /Zarejestrowano|Nie udało|zajęta/.test(t.textContent)), null, { timeout: ms });
+  const t = await page.$$eval('#toastRoot .toast', (ts) => ts.map((x) => x.textContent.trim()).join(' / '));
+  await page.evaluate(() => document.querySelectorAll('#toastRoot .toast').forEach((x) => x.remove()));
+  return t;
+}
+async function zapiszOp(page, o) { await wypelnij(page, o); await page.click('#opForm button[type="submit"]'); return wynikZapisu(page); }
+function sprawdzNumery(snap, oczekiwanaLiczba) {
+  const nr = Object.values(snap.collections.transactions || {}).map((t) => t.nr).sort();
+  assert.equal(nr.length, oczekiwanaLiczba, `liczba operacji: ${nr.join(',')}`);
+  assert.equal(new Set(nr).size, nr.length, `zduplikowane numery: ${nr.join(',')}`);
+  const wz = nr.filter((n) => n.startsWith('WZ')).map((n) => Number(n.slice(3)));
+  assert.equal(snap.collections.meta.counters.wz, Math.max(0, ...wz), `licznik WZ (${JSON.stringify(snap.collections.meta.counters)}) = najwyższy numer`);
+  return nr;
+}
+const WIDOCZNOSC = () => {
+  window.EP_LOCAL_OPCJE = Object.assign({ pauzaUkrytejKartyMs: 300 }, window.EP_LOCAL_OPCJE || {});
+  window.__widocznosc = 'visible';
+  Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get() { return window.__widocznosc; } });
+  Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get() { return window.__widocznosc === 'hidden'; } });
+};
+const ustawWidocznosc = (page, v) => page.evaluate((x) => { window.__widocznosc = x; document.dispatchEvent(new Event('visibilitychange')); }, v);
+
+test('(g1) telefon wraca z tła (SSE zwolnione) i od razu zapisuje, wczytywanie stanu wolne → numer WZ unikalny, licznik się nie cofa', { timeout: 120000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const srv = await uruchomSerwer({ dataDir: dane });
+  await zasiej(srv.port);
+  const ctxA = await przegladarka.newContext(), ctxB = await przegladarka.newContext();
+  await ctxB.addInitScript(WIDOCZNOSC);
+  try {
+    const A = sledz(await ctxA.newPage(), 'A'), B = sledz(await ctxB.newPage(), 'TELEFON');
+    await A.goto(srv.url + '/'); await gotowa(A);
+    await B.goto(srv.url + '/'); await gotowa(B);
+    assert.match(await zapiszOp(A, { ilosc: 4 }), /WZ-00001/);
+    await saldo(B, '4 szt.');
+    await ustawWidocznosc(B, 'hidden');
+    await B.waitForFunction(() => EP_LOCAL.polaczenie === 'wstrzymane', null, { timeout: 5000 });
+    assert.match(await zapiszOp(A, { ilosc: 5 }), /WZ-00002/);
+    assert.match(await zapiszOp(A, { ilosc: 6 }), /WZ-00003/);
+    await B.waitForTimeout(3000); // dzierżawa A dawno wygasła
+    await wypelnij(B, { ilosc: 7 }); // formularz otwarty przed zablokowaniem telefonu
+    await B.route('**/api/snapshot', async (r) => { await new Promise((x) => setTimeout(x, 1500)); r.continue(); }); // duża baza, słabe Wi-Fi
+    await ustawWidocznosc(B, 'visible');
+    await B.click('#opForm button[type="submit"]');
+    assert.match(await wynikZapisu(B), /Zarejestrowano wydanie palet \(WZ-00004\)/);
+    const snap = (await zadanieJson(srv.port, '/api/snapshot'));
+    sprawdzNumery(snap, 4);
+    await saldo(A, '22 szt.'); await saldo(B, '22 szt.');
+    assert.deepEqual(tylkoSiec([...A.bledy, ...B.bledy]), []);
+  } finally { await ctxA.close(); await ctxB.close(); await srv.zatrzymaj(); }
+});
+async function zadanieJson(port, p) { const { zadanie } = require('./pomocnicy-serwera'); return (await zadanie(port, { path: p })).json; }
+
+test('(g2) „zawieszone” połączenie na żywo: zapis nadaje poprawny numer od razu, a po ~ciszy strona sama łączy się ponownie', { timeout: 120000 }, async () => {
+  const srv = await serwerWProcesie({ EP_HEARTBEAT_MS: '400' });
+  await zasiej(srv.port);
+  const ctx = await przegladarka.newContext();
+  await ctx.addInitScript(() => { window.EP_LOCAL_OPCJE = { ciszaSseMs: 3000 }; });
+  const zawies = (przed) => { const r = [...srv.klienciSse].filter((x) => !przed.has(x)); assert.equal(r.length, 1, 'jeden nowy strumień B'); r[0].write = () => true; };
+  try {
+    const A = sledz(await ctx.newPage(), 'A');
+    await A.goto(srv.url); await gotowa(A);
+    let przed = new Set(srv.klienciSse);
+    const B = sledz(await ctx.newPage(), 'B');
+    await B.goto(srv.url); await gotowa(B);
+    await B.waitForFunction(() => EP_LOCAL.polaczenie === 'otwarte');
+    assert.match(await zapiszOp(A, { ilosc: 5 }), /WZ-00001/);
+    await saldo(B, '5 szt.');
+    // 1) B nic nie robi: po ~3 s ciszy (brak „ping”) łączy się ponownie i dociąga zmiany
+    zawies(przed); przed = new Set(srv.klienciSse);
+    assert.match(await zapiszOp(A, { ilosc: 6 }), /WZ-00002/);
+    await saldo(B, '11 szt.', 15000);
+    assert.equal(await B.evaluate(() => EP_LOCAL.polaczenie), 'otwarte');
+    // 2) znów zawieszone; B zapisuje zaraz po dwóch zapisach A (nie równocześnie) — numer nie może się powtórzyć
+    await B.waitForFunction(() => EP_LOCAL.polaczenie === 'otwarte');
+    zawies(przed);
+    assert.match(await zapiszOp(A, { ilosc: 7 }), /WZ-00003/);
+    assert.match(await zapiszOp(A, { ilosc: 8 }), /WZ-00004/);
+    assert.match(await zapiszOp(B, { ilosc: 9 }), /Zarejestrowano wydanie palet \(WZ-00005\)/);
+    assert.equal(await B.evaluate(() => EP_LOCAL.online), true);
+    assert.equal(await B.$('[data-ep-banner="offline"]'), null, 'zapisy działają — bez paska „brak połączenia”');
+    sprawdzNumery(srv.baza.snapshot(), 5);
+    await saldo(A, '35 szt.'); await saldo(B, '35 szt.');
+    assert.deepEqual(tylkoSiec([...A.bledy, ...B.bledy]), []);
+  } finally { await ctx.close(); await srv.zamknij(); }
+});
+
+test('(g3) wolny dysk serwera (zapis 3 s, dłużej niż dzierżawa): dwa urządzenia zapisują w tej samej chwili → numery unikalne', { timeout: 180000 }, async () => {
+  const srv = await serwerWProcesie();
+  await zasiej(srv.port);
+  const oryg = srv.baza.zapiszPlik.bind(srv.baza);
+  srv.baza.zapiszPlik = async (t) => { await new Promise((r) => setTimeout(r, 3000)); return oryg(t); };
+  const ctxA = await przegladarka.newContext(), ctxB = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctxA.newPage(), 'A'), B = sledz(await ctxB.newPage(), 'B');
+    await A.goto(srv.url); await gotowa(A);
+    await B.goto(srv.url); await gotowa(B);
+    for (let runda = 0; runda < 2; runda++) {
+      await wypelnij(A, { ilosc: 10 + runda }); await wypelnij(B, { ilosc: 20 + runda });
+      await Promise.all([A.click('#opForm button[type="submit"]'), B.click('#opForm button[type="submit"]')]);
+      const [ta, tb] = await Promise.all([wynikZapisu(A, 90000), wynikZapisu(B, 90000)]);
+      assert.doesNotMatch(ta + tb, /Nie udało|zajęta/, `runda ${runda}: ${ta} | ${tb}`);
+    }
+    sprawdzNumery(srv.baza.snapshot(), 4);
+    assert.deepEqual(tylkoSiec([...A.bledy, ...B.bledy]), []);
+  } finally { await ctxA.close(); await ctxB.close(); await srv.zamknij(); }
+});
+
+test('(g4) pasek „Brak połączenia… zmiany nie są zapisywane” znika po pierwszym udanym zapisie', { timeout: 90000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const srv = await uruchomSerwer({ dataDir: dane });
+  await zasiej(srv.port);
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'PASEK');
+    await A.goto(srv.url + '/'); await gotowa(A);
+    await A.waitForFunction(() => EP_LOCAL.polaczenie === 'otwarte');
+    // czy pasek w ogóle się pokazał (znika szybko — przy następnym udanym żądaniu)
+    await A.evaluate(() => { window.__pasek = []; new MutationObserver(() => { const b = document.querySelector('[data-ep-banner="offline"]'); if (b) window.__pasek.push(b.textContent); }).observe(document.body, { childList: true, subtree: true }); });
+    let raz = true; // jedno żądanie ginie w sieci (chwilowy błąd Wi-Fi / 502 z proxy)
+    await A.route('**/api/write', (r) => { if (raz && /"coll":"transactions"/.test(r.request().postData() || '')) { raz = false; return r.abort('connectionreset'); } return r.continue(); });
+    assert.match(await zapiszOp(A, { ilosc: 5 }), /Nie udało się zapisać operacji/);
+    await A.waitForFunction(() => window.__pasek.length > 0, null, { timeout: 5000 });
+    assert.match((await A.evaluate(() => window.__pasek))[0], /Brak połączenia z serwerem/);
+    // aplikacja oddaje numer (kolejne żądanie do serwera) — udane żądanie od razu chowa pasek
+    await A.waitForFunction(() => !document.querySelector('[data-ep-banner="offline"]') && EP_LOCAL.online === true, null, { timeout: 5000 });
+    assert.match(await zapiszOp(A, { ilosc: 6 }), /Zarejestrowano wydanie palet \(WZ-0000[12]\)/);
+    await A.waitForFunction(() => !document.querySelector('[data-ep-banner="offline"]') && EP_LOCAL.online === true, null, { timeout: 3000 });
+    await A.waitForTimeout(2000);
+    assert.equal(await A.$('[data-ep-banner="offline"]'), null, 'pasek nie wraca, gdy połączenie na żywo działa');
+    assert.equal(await A.evaluate(() => EP_LOCAL.polaczenie), 'otwarte');
+    assert.deepEqual(tylkoSiec(A.bledy).filter((b) => !/console\.error: (Error|JSHandle)/.test(b)), []);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});
+
+test('(g5) nasłuch z limitem: ta sama sekwencja migawek w trybie przeglądarki i serwera (bez pustej migawki po własnym zapisie)', { timeout: 90000 }, async () => {
+  const przebieg = (page) => page.evaluate(async () => {
+    const db = await window.claude.use('db'); const C = db.collection('qa-sem');
+    const tick = () => new Promise((r) => setTimeout(r, 80));
+    await Promise.all([C.doc('a').set({ s: 'b' }), C.doc('b').set({ s: 'a' }), C.doc('c').set({ s: 'c' }), C.doc('d').set({ s: 'd' })]);
+    const log = [], logDoc = [];
+    const u1 = C.orderBy('s').limit(3).onSnapshot((s) => log.push(s.docChanges().map((c) => c.type[0] + c.doc.id + c.oldIndex + '>' + c.newIndex).join(' ')));
+    const u2 = C.doc('c').onSnapshot((s) => logDoc.push(JSON.stringify(s.data() || null)));
+    await tick();
+    await C.doc('aa').set({ s: '0' }); await tick();
+    await C.doc('aa').delete(); await tick();
+    await C.doc('b').update({ s: 'zz' }); await tick();
+    await C.doc('c').update({ n: 1 }); await tick();
+    await db.batch().set(C.doc('e'), { s: 'e' }).update(C.doc('c'), { n: 2 }).commit(); await tick();
+    u1(); u2();
+    return { log, logDoc };
+  });
+  const srv = await uruchomSerwer({ dataDir: (() => { const d = tymczasowyKatalog(); sprzatanie.push(d); return d; })() });
+  const ctx = await przegladarka.newContext();
+  try {
+    const P = await ctx.newPage(); await P.goto(URL_PLIKU); await P.waitForFunction(() => window.EP_LOCAL && EP_LOCAL.storage === 'indexeddb');
+    const S = await ctx.newPage(); await S.goto(srv.url + '/'); await S.waitForFunction(() => window.EP_LOCAL && EP_LOCAL.storage === 'server');
+    const wP = await przebieg(P), wS = await przebieg(S);
+    assert.deepEqual(wS, wP, 'serwer i IndexedDB dostarczają te same migawki');
+    assert.equal(wS.log.length, 6, JSON.stringify(wS.log));
+    assert.ok(!wS.log.slice(1).includes(''), 'żadnej pustej migawki po zapisie, który zmienił wynik');
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});
+
+// kopia w formacie aplikacji z n operacjami (jak „Pobierz kopię”)
+function kopiaTestowa(n) {
+  const couriers = [{ id: 'dpd', name: 'DPD', order: 1, color: '#FF3D5A', custom: false, enabled: true }, { id: 'gls', name: 'GLS', order: 2, color: '#2BE8FF', custom: false, enabled: true }];
+  const transactions = []; let wz = 0, pz = 0;
+  for (let i = 0; i < n; i++) {
+    const typ = i % 3 === 2 ? 'zwrot' : 'wydanie';
+    const data = new Date(Date.UTC(2024, 9, 1) + Math.floor(i * (700 / n)) * 86400000).toISOString().slice(0, 10);
+    transactions.push({ id: `imp${String(i).padStart(6, '0')}`, kurierId: couriers[i % 2].id, kurierNazwa: couriers[i % 2].name, typ, ilosc: 1 + (i % 7), data, uwagi: '', createdAt: Date.parse(data) + i, nr: typ === 'wydanie' ? `WZ-${String(++wz).padStart(5, '0')}` : `PZ-${String(++pz).padStart(5, '0')}` });
+  }
+  return { app: 'ewidencja-palet', format: 1, exportedAt: new Date().toISOString(), source: 'claude', couriers, transactions, meta: { counters: { wz, pz } }, logos: {}, wz, pz };
+}
+
+test('(g6) IndexedDB: druga karta dogania wczytanie kopii z 3000 operacji w ~2 s, a jej zapis dostaje kolejny numer (bez duplikatu)', { timeout: 300000 }, async () => {
+  const tmp = tymczasowyKatalog('ep-kopia-'); sprzatanie.push(tmp);
+  const k = kopiaTestowa(3000);
+  const plik = path.join(tmp, 'kopia-3000.json');
+  fs.writeFileSync(plik, JSON.stringify({ ...k, wz: undefined, pz: undefined }));
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'IMPORT'), B = sledz(await ctx.newPage(), 'DRUGA');
+    await A.goto(URL_PLIKU); await gotowa(A);
+    await B.goto(URL_PLIKU); await gotowa(B);
+    await wczytajKopie(A, plik, 'replace');
+    const t0 = Date.now();
+    const saldoA = await A.textContent('#sidebarBalance');
+    await saldo(B, saldoA, 3000);
+    const dogonil = Date.now() - t0;
+    assert.equal(await B.evaluate(() => transactions.length), 3000);
+    // od razu rejestruje wydanie w drugiej karcie
+    assert.match(await zapiszOp(B, { ilosc: 3 }), new RegExp(`Zarejestrowano wydanie palet \\(WZ-0${k.wz + 1}\\)`));
+    const r = await A.evaluate(async () => {
+      const db = await window.claude.use('db');
+      const nr = (await db.collection('transactions').get()).docs.map((d) => d.data().nr);
+      return { n: nr.length, unikalne: new Set(nr).size, counters: (await db.doc('meta/counters').get()).data() };
+    });
+    assert.deepEqual(r, { n: 3001, unikalne: 3001, counters: { wz: k.wz + 1, pz: k.pz } });
+    assert.ok(dogonil < 3000, `druga karta dogoniła po ${dogonil} ms`);
+    assert.deepEqual([...A.bledy, ...B.bledy], []);
+  } finally { await ctx.close(); }
+});
+
+test('(g7) localStorage: dzierżawa (acquire) wyklucza się między kartami, zwalnia przy zamknięciu karty', { timeout: 120000 }, async () => {
+  for (const bezLocks of [false, true]) {
+    const ctx = await przegladarka.newContext();
+    await ctx.addInitScript((bez) => {
+      Object.defineProperty(window, 'indexedDB', { get() { return undefined; }, configurable: true });
+      if (bez) Object.defineProperty(Navigator.prototype, 'locks', { get() { return undefined; }, configurable: true }); // Safari < 15.4
+    }, bezLocks);
+    try {
+      const strony = [await ctx.newPage(), await ctx.newPage()];
+      for (const p of strony) { await p.goto(URL_PLIKU); await p.waitForFunction(() => window.EP_LOCAL && EP_LOCAL.storage === 'localstorage'); }
+      let oba = 0, nikt = 0;
+      for (let i = 0; i < 25; i++) {
+        const cel = Date.now() + 150;
+        const r = await Promise.all(strony.map((p, k) => p.evaluate(async ([c, n, kk]) => {
+          const db = await window.claude.use('db'); const ref = db.doc('meta/wyscig-' + n);
+          while (Date.now() < c) { /* wspólna chwila startu */ }
+          return (await ref.acquire({ holder: 'h' + kk, ttlMs: 5000 })).acquired;
+        }, [cel, i, k])));
+        if (r[0] && r[1]) oba++;
+        if (!r[0] && !r[1]) nikt++;
+      }
+      assert.equal(oba, 0, `${bezLocks ? 'bez Web Locks' : 'Web Locks'}: obie karty dostały dzierżawę ${oba}/25 razy`);
+      assert.equal(nikt, 0);
+      // ten sam posiadacz odnawia, inny dostaje odmowę z expiresAt
+      const [a, b] = strony;
+      const r1 = await a.evaluate(async () => (await (await window.claude.use('db')).doc('meta/x').acquire({ holder: 'A', ttlMs: 1500 })));
+      const r2 = await b.evaluate(async () => (await (await window.claude.use('db')).doc('meta/x').acquire({ holder: 'B', ttlMs: 1500 })));
+      const r3 = await a.evaluate(async () => (await (await window.claude.use('db')).doc('meta/x').acquire({ holder: 'A', ttlMs: 1500 })));
+      assert.equal(r1.acquired, true); assert.equal(r2.acquired, false); assert.ok(Date.parse(r2.expiresAt) > Date.now() - 100);
+      assert.equal(r3.acquired, true); assert.ok(r3.version > r1.version);
+      if (!bezLocks) {
+        const t0 = Date.now();
+        await a.close(); // zamknięta karta zwalnia blokadę od razu (przeglądarka robi to w kilka ms), nie po wygaśnięciu
+        let ok = false;
+        while (!ok && Date.now() - t0 < 1000) ok = await b.evaluate(async () => (await (await window.claude.use('db')).doc('meta/x').acquire({ holder: 'B', ttlMs: 1500 })).acquired);
+        assert.equal(ok, true, 'po zamknięciu karty A dzierżawa wolna przed upływem ttl');
+      } else {
+        await b.waitForTimeout(1600);
+        assert.equal(await b.evaluate(async () => (await (await window.claude.use('db')).doc('meta/x').acquire({ holder: 'B', ttlMs: 1500 })).acquired), true, 'po wygaśnięciu');
+      }
+    } finally { await ctx.close(); }
+  }
+});
+
+test('(g8) serwer odtworzył bazę z kopii przy starcie → jednorazowy komunikat w aplikacji (data kopii, nazwa uszkodzonego pliku)', { timeout: 90000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  let srv = await uruchomSerwer({ dataDir: dane });
+  await zasiej(srv.port);
+  await postJson(srv.port, '/api/write', { op: 'set', coll: 'transactions', id: 't1', data: { kurierId: 'dpd', kurierNazwa: 'DPD', typ: 'wydanie', ilosc: 9, data: '2026-10-01', uwagi: '', createdAt: 1, nr: 'WZ-00001' } });
+  await srv.zatrzymaj();
+  fs.writeFileSync(path.join(dane, 'baza.json'), '{"collections": {"transactions": {"t1": ');
+  srv = await uruchomSerwer({ dataDir: dane });
+  const ctx = await przegladarka.newContext(), ctx2 = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'ODTWORZENIE');
+    await A.goto(srv.url + '/'); await gotowa(A);
+    const baner = await A.waitForSelector('[data-ep-banner="odtworzenie"]', { timeout: 10000 });
+    const tekst = await baner.textContent();
+    assert.match(tekst, /plik bazy na serwerze był uszkodzony/);
+    assert.match(tekst, /z kopii z dnia \d{2}\.\d{2}\.\d{4} \(stan z początku tego dnia\)/);
+    assert.match(tekst, /baza\.uszkodzona-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.json/);
+    await A.emulateMedia({ media: 'print' });
+    assert.equal(await baner.evaluate((el) => getComputedStyle(el.parentNode).display), 'none', 'nie trafia na wydruk');
+    await A.emulateMedia({ media: 'screen' });
+    await A.click('[data-ep-banner-zamknij="odtworzenie"]');
+    assert.equal(await A.$('[data-ep-banner="odtworzenie"]'), null);
+    await A.reload(); await gotowa(A); await A.waitForTimeout(1000);
+    assert.equal(await A.$('[data-ep-banner="odtworzenie"]'), null, 'na tym urządzeniu już się nie pokazuje');
+    const B = sledz(await ctx2.newPage(), 'INNE-URZADZENIE');
+    await B.goto(srv.url + '/'); await gotowa(B);
+    await B.waitForSelector('[data-ep-banner="odtworzenie"]', { timeout: 10000 });
+    assert.deepEqual([...A.bledy, ...B.bledy], []);
+  } finally { await ctx.close(); await ctx2.close(); await srv.zatrzymaj(); }
+});
+
+test('(g9) adres /index.html/ (ukośnik na końcu) prowadzi do działającej aplikacji, a nie do strony bez bazy', { timeout: 60000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const srv = await uruchomSerwer({ dataDir: dane });
+  await zasiej(srv.port);
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'UKOSNIK');
+    await A.goto(srv.url + '/index.html/'); await gotowa(A);
+    assert.equal(new URL(A.url()).pathname, '/');
+    assert.deepEqual(await A.evaluate(() => [EP_LOCAL.mode, EP_LOCAL.storage]), ['server', 'server']);
+    assert.deepEqual(A.bledy, []);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});

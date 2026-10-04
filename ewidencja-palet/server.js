@@ -11,19 +11,33 @@
                 127.0.0.1 = tylko ten komputer)
      DATA_DIR   folder z danymi (domyślnie ./dane obok tego pliku)
      EP_HASLO   jeśli ustawione — każde wejście wymaga hasła (HTTP Basic,
-                dowolna nazwa użytkownika)
+                dowolna nazwa użytkownika); po 5 błędnych próbach z jednego adresu
+                kolejne są wstrzymywane (30 s, potem coraz dłużej, najwyżej 15 min)
+     EP_HASLO_PLIK  zamiast EP_HASLO: ścieżka do pliku z hasłem w pierwszej linii
+                (dowolne znaki — bez problemów z $ i # w docker-compose.yml)
+     EP_HOSTY   dodatkowe nazwy, pod którymi serwer odpowiada, po przecinku
+                (np. palety.example.pl,*.moj-nas.pl). Zawsze dozwolone: localhost,
+                adresy IP, nazwy bez kropki (np. nas) i *.local / *.lan / *.home.arpa /
+                *.internal. Inne nazwy są odrzucane (ochrona przed „DNS rebinding”).
+                EP_HOSTY=* wyłącza tę kontrolę (niezalecane).
      EP_UZYTKOWNIK  (Docker/Synology) "auto" albo "UID:GID" — gdy serwer startuje
                 jako root: nadaje folderowi danych właściciela i przechodzi na
                 zwykłego użytkownika (patrz docker-compose.yml)
+     EP_DOCKER  1 = serwer działa w kontenerze (ustawia Dockerfile; wykrywany też
+                po pliku /.dockerenv) — inne wskazówki w oknie startowym
    Opcja wiersza poleceń:
      --otworz   po starcie otwiera aplikację w przeglądarce
 
    Dane:  DATA_DIR/baza.json           cała baza (zapis atomowy przy każdej zmianie)
           DATA_DIR/zalaczniki/<id>     wgrane loga kurierów
-          DATA_DIR/kopie/baza-RRRR-MM-DD.json   kopia dzienna (30 ostatnich)
+          DATA_DIR/kopie/baza-RRRR-MM-DD.json   kopia dzienna (30 ostatnich): stan z początku
+                                                dnia, sprzed pierwszej zmiany tego dnia
+          DATA_DIR/odtworzenie.json    ślad po odtworzeniu bazy z kopii przy starcie
+                                       (aplikacja pokazuje wtedy jednorazowy komunikat)
    ========================================================================= */
 'use strict';
 const http = require('http');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -52,10 +66,47 @@ function konfiguracja(env, argv) {
     port,
     host: env.HOST || '0.0.0.0',
     dataDir: path.resolve(env.DATA_DIR || path.join(ROOT, 'dane')),
-    haslo: env.EP_HASLO || '',
+    haslo: env.EP_HASLO_PLIK ? czytajHasloZPliku(env.EP_HASLO_PLIK) : (env.EP_HASLO || ''),
+    hosty: listaHostow(env.EP_HOSTY),
+    docker: env.EP_DOCKER === '1' || (env.EP_DOCKER !== '0' && fs.existsSync('/.dockerenv')),
     otworz: argv.includes('--otworz'),
-    heartbeatMs: Number(env.EP_HEARTBEAT_MS) > 0 ? Number(env.EP_HEARTBEAT_MS) : 25000,
+    // „ping” w strumieniu zdarzeń; przeglądarka uznaje połączenie za zawieszone po ~35 s ciszy
+    heartbeatMs: Number(env.EP_HEARTBEAT_MS) > 0 ? Number(env.EP_HEARTBEAT_MS) : 15000,
+    blokadaHaslaMs: Number(env.EP_BLOKADA_HASLA_MS) > 0 ? Number(env.EP_BLOKADA_HASLA_MS) : 30000,
   };
+}
+/** Hasło z pliku (EP_HASLO_PLIK): pierwsza linia, bez BOM i końca linii (plik z Notatnika też działa). */
+function czytajHasloZPliku(plik) {
+  let tekst;
+  try { tekst = fs.readFileSync(plik, 'utf8'); }
+  catch (e) { throw new Error(`BŁĄD: nie można odczytać pliku z hasłem EP_HASLO_PLIK="${plik}" (${e.code || e.message}).\n  Utwórz ten plik i wpisz hasło w pierwszej linii albo usuń EP_HASLO_PLIK.`); }
+  const haslo = tekst.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)[0];
+  if (!haslo) throw new Error(`BŁĄD: plik z hasłem EP_HASLO_PLIK="${plik}" jest pusty — wpisz hasło w pierwszej linii.`);
+  return haslo;
+}
+function listaHostow(v) {
+  return String(v || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+    .map((s) => (s === '*' ? s : s.replace(/^[a-z]+:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, '').replace(/\.$/, '')));
+}
+// nazwy zarezerwowane dla sieci lokalnych — nikt z internetu nie może ich „przejąć” przez DNS
+const LOKALNE_DOMENY = /\.(local|lan|localhost|internal|home\.arpa)$/;
+/**
+ * Czy nagłówek Host wskazuje na ten serwer w sieci lokalnej? Chroni przed „DNS rebinding”: obca strona
+ * otwarta w przeglądarce kogoś z tej sieci mogłaby inaczej czytać i zmieniać dane (zwłaszcza bez EP_HASLO).
+ */
+function dozwolonyHost(naglowek, hosty) {
+  if (naglowek === undefined) return true; // HTTP/1.0 bez Host — przeglądarki zawsze go wysyłają
+  if (hosty.includes('*')) return true;
+  const h = String(naglowek).trim().toLowerCase();
+  const m6 = /^\[([0-9a-f:.]+)\](?::\d{1,5})?$/.exec(h);
+  if (m6) return net.isIPv6(m6[1]);
+  const m = /^([a-z0-9_.-]+?)\.?(?::\d{1,5})?$/.exec(h);
+  if (!m) return false;
+  const nazwa = m[1];
+  if (net.isIPv4(nazwa)) return true;
+  if (!/^[a-z0-9_-]+(\.[a-z0-9_-]+)*$/.test(nazwa)) return false;
+  if (!nazwa.includes('.') || LOKALNE_DOMENY.test(nazwa)) return true;
+  return hosty.some((w) => (w.startsWith('*.') ? nazwa.endsWith(w.slice(1)) : nazwa === w));
 }
 
 /* ---------------------------- narzędzia ---------------------------- */
@@ -94,6 +145,8 @@ function scal(stare, zmiana) {
 // podobiekt pod kluczem k (tworzy go); bezpieczne także dla klucza "__proto__"
 function grupa(o, k) { if (!Object.prototype.hasOwnProperty.call(o, k)) ustaw(o, k, {}); return o[k]; }
 const poprawneId = (v) => typeof v === 'string' && ID_RE.test(v) && v !== '.' && v !== '..';
+/** decodeURIComponent bez wyjątku: null dla błędnego kodowania „%” (→ 400, a nie 500 ze stosem w logu). */
+function dekoduj(s) { try { return decodeURIComponent(s); } catch (e) { return null; } }
 function spij(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) { /* ignore */ } }
 
 function fsyncKatalog(dir) {
@@ -159,6 +212,7 @@ class Baza {
     this.ostatnioZapisany = null;// treść ostatnio zapisanego pliku (do wycofania przy błędzie zapisu)
     this.liczbaZapisow = 0;
     this.revZapisany = 0;        // rev stanu, który jest już na dysku
+    this.poWycofaniu = null;     // wywoływane po nieudanym zapisie i wycofaniu stanu (serwer rozsyła „reset”)
   }
 
   przygotujKatalogi() {
@@ -173,7 +227,8 @@ class Baza {
 
   /** Czyta plik bazy (baza.json) ALBO kopię w formacie aplikacji (kopie dzienne, /api/kopia, „Pobierz kopię”). */
   static parsuj(tekst) {
-    let o = JSON.parse(tekst);
+    // znak BOM na początku (plik zapisany w Notatniku / edytorze Windows) to nie uszkodzenie
+    let o = JSON.parse(String(tekst).replace(/^\uFEFF/, ''));
     if (czyObiekt(o) && o.app === APP && Array.isArray(o.couriers) && Array.isArray(o.transactions)) o = zKopiiAplikacji(o);
     if (!czyObiekt(o) || !czyObiekt(o.collections)) throw new Error('brak sekcji "collections"');
     for (const [c, docs] of Object.entries(o.collections)) {
@@ -198,7 +253,10 @@ class Baza {
   wczytaj() {
     if (!fs.existsSync(this.plik)) {
       const kopie = this.listaKopii();
-      if (kopie.length) this.log.warn(`Uwaga: brak pliku ${this.plik}, ale istnieją kopie w ${this.dirKopie}. Startuję z pustą bazą — aby przywrócić dane, skopiuj wybraną kopię jako baza.json i uruchom serwer ponownie.`);
+      if (kopie.length) {
+        this.log.warn(`Uwaga: brak pliku ${this.plik}, ale istnieją kopie w ${this.dirKopie}. Startuję z pustą bazą — aby przywrócić dane, wczytaj wybraną kopię w aplikacji (Ustawienia i kopia → Wczytaj kopię z pliku → Zastąp wszystko).`);
+        return { przywrocono: false, brakPliku: true };
+      }
       return { przywrocono: false };
     }
     const tekst = fs.readFileSync(this.plik, 'utf8'); // błąd dysku/uprawnień — przerywamy start
@@ -284,20 +342,28 @@ class Baza {
       const tekst = this.serializuj();
       this.kopiaDzienna(); // kopia stanu sprzed pierwszej zmiany dnia
       try {
-        await zapiszAtomowoAsync(this.plik, tekst);
+        await this.zapiszPlik(tekst);
         this.ostatnioZapisany = tekst; this.wersjaZapisana = wersja; this.revZapisany = rev; this.liczbaZapisow++;
         for (const w of grupa) w.resolve();
       } catch (e) {
         this.log.error(`BŁĄD ZAPISU BAZY (${this.plik}): ${e.message}`);
         const wszyscy = grupa.concat(this.oczekujace.splice(0));
+        const revPrzed = this.rev;
         this.przywrocOstatniZapisany();
+        // numer zmian nigdy się nie cofa: klient mógł już pobrać migawkę z wycofanymi zmianami
+        // (o numerze ≤ revPrzed) — wyższy numer każe mu wczytać stan od nowa, a numery nie powtarzają się
+        this.rev = Math.max(this.rev, revPrzed) + 1;
         const blad = e.code === 'ENOSPC'
           ? bladApi(507, 'quota_exceeded', 'Brak miejsca na dysku serwera — zmiany nie zostały zapisane')
           : bladApi(500, 'storage_failed', 'Nie udało się zapisać danych na dysku serwera');
         for (const w of wszyscy) w.reject(blad);
+        if (this.poWycofaniu) { try { this.poWycofaniu(); } catch (e2) { this.log.error(`Błąd po wycofaniu: ${e2.message}`); } }
       }
     }
   }
+
+  /** Trwały zapis pliku bazy (osobna metoda — testy podstawiają tu np. wolny dysk). */
+  async zapiszPlik(tekst) { await zapiszAtomowoAsync(this.plik, tekst); }
 
   przywrocOstatniZapisany() {
     try { this.zastosujStan(this.ostatnioZapisany ? Baza.parsuj(this.ostatnioZapisany) : { rev: 0, collections: {} }); }
@@ -531,34 +597,103 @@ function stworzSerwer(cfg, log) {
   const dzierzawy = new Map();   // "coll\u0000id" -> {holder, exp, ver} — krótkie dzierżawy acquire() (tylko w pamięci)
   const serverId = noweId(12);
   let dataDirReal = cfg.dataDir; let rootReal = ROOT;
+  // Najwyższy numer zmiany, która jest już na dysku I została rozesłana do wszystkich strumieni SSE.
+  // Zmiany są rozsyłane w kolejności numerów, więc klient, który w swoim strumieniu doszedł do tego
+  // numeru (albo pobrał migawkę o co najmniej takim numerze), ma aktualny stan — sprawdza to przez
+  // GET /api/rev przed odczytem (get) i przed zgłoszeniem przyznanej dzierżawy (acquire).
+  let revRozeslany = 0;
+  let odtworzenie = null;        // informacja o odtworzeniu bazy z kopii przy starcie (dla aplikacji)
 
+  // pojedyncza zmiana → „change”; paczka (batch) → jedno zdarzenie „changes”, żeby przeglądarka zastosowała ją
+  // naraz (jedna migawka dla nasłuchów, jak w trybie przeglądarki), a nie po kawałku
   function rozeslij(zmiany, clientId) {
-    for (const z of zmiany) {
-      const linia = `event: change\ndata: ${JSON.stringify({ rev: z.rev, coll: z.coll, id: z.id, data: z.data, clientId: clientId || null })}\n\n`;
-      for (const res of klienciSse) res.write(linia);
-    }
+    if (!zmiany.length) return;
+    const cid = clientId || null;
+    const linia = zmiany.length === 1
+      ? `event: change\ndata: ${JSON.stringify({ rev: zmiany[0].rev, coll: zmiany[0].coll, id: zmiany[0].id, data: zmiany[0].data, clientId: cid })}\n\n`
+      : `event: changes\ndata: ${JSON.stringify({ clientId: cid, changes: zmiany.map((z) => ({ rev: z.rev, coll: z.coll, id: z.id, data: z.data })) })}\n\n`;
+    for (const res of klienciSse) res.write(linia);
+    for (const z of zmiany) if (z.rev > revRozeslany) revRozeslany = z.rev;
   }
+  // nieudany zapis na dysk: stan w pamięci wrócił do ostatnio zapisanego — klienci wczytują go od nowa
+  baza.poWycofaniu = () => {
+    revRozeslany = baza.rev;
+    const linia = `event: reset\ndata: ${JSON.stringify({ rev: baza.rev })}\n\n`;
+    for (const res of klienciSse) res.write(linia);
+  };
 
-  function autoryzowany(req) {
-    if (!cfg.haslo) return true;
-    const m = /^Basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(String(req.headers.authorization || ''));
-    if (!m) return false;
-    const dek = Buffer.from(m[1], 'base64').toString('utf8');
+  // Hasło (HTTP Basic). Po PROG_PROB błędnych hasłach z jednego adresu kolejne próby z niego są przez
+  // pewien czas odrzucane bez sprawdzania (429): 30 s, potem dwa razy dłużej przy każdej następnej
+  // pomyłce, najwyżej 15 min. Poprawne hasło kasuje licznik. Żądania bez hasła (pierwsze wejście
+  // przeglądarki) się nie liczą.
+  const PROG_PROB = 5, MAKS_BLOKADA_MS = 15 * 60 * 1000, ZAPOMNIJ_MS = 60 * 60 * 1000;
+  const proby = new Map(); // adres -> {n, blokadaDo, ostatnio}
+  function hasloPoprawne(b64) {
+    const dek = Buffer.from(b64, 'base64').toString('utf8');
     const i = dek.indexOf(':'); if (i < 0) return false;
     const h = (s) => crypto.createHash('sha256').update(s, 'utf8').digest();
     return crypto.timingSafeEqual(h(dek.slice(i + 1)), h(cfg.haslo));
+  }
+  /** {ok:true} | {ok:false} (401) | {ok:false, blokada: sekundy} (429) */
+  function autoryzacja(req) {
+    if (!cfg.haslo) return { ok: true };
+    const m = /^Basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(String(req.headers.authorization || ''));
+    if (!m) return { ok: false };
+    const ip = (req.socket && req.socket.remoteAddress) || '?', teraz = Date.now();
+    let p = proby.get(ip);
+    if (p && p.blokadaDo <= teraz && teraz - p.ostatnio > ZAPOMNIJ_MS) { proby.delete(ip); p = undefined; }
+    if (p && p.blokadaDo > teraz) return { ok: false, blokada: Math.ceil((p.blokadaDo - teraz) / 1000) };
+    if (hasloPoprawne(m[1])) { if (p) proby.delete(ip); return { ok: true }; }
+    if (!p) {
+      if (proby.size >= 10000) for (const [k, v] of proby) if (v.blokadaDo <= teraz) proby.delete(k);
+      p = { n: 0, blokadaDo: 0, ostatnio: 0 }; proby.set(ip, p);
+    }
+    p.n++; p.ostatnio = teraz;
+    if (p.n >= PROG_PROB) {
+      const ms = Math.min(MAKS_BLOKADA_MS, cfg.blokadaHaslaMs * 2 ** Math.min(20, p.n - PROG_PROB));
+      p.blokadaDo = teraz + ms;
+      log.warn(`Uwaga: ${p.n} błędnych haseł z adresu ${ip} — kolejne próby z tego adresu wstrzymane na ${Math.ceil(ms / 1000)} s.`);
+    }
+    return { ok: false };
+  }
+
+  const odrzuconeHosty = new Set();
+  function zapamietajOdtworzenie(wynik) {
+    const plik = path.join(cfg.dataDir, 'odtworzenie.json');
+    if (wynik && (wynik.odlozony || wynik.brakPliku)) {
+      const info = {
+        id: noweId(12), kiedy: new Date().toISOString(),
+        zKopii: wynik.zKopii ? path.basename(wynik.zKopii) : null,
+        odlozony: wynik.odlozony ? path.basename(wynik.odlozony) : null,
+        pusta: !wynik.przywrocono, brakPliku: !!wynik.brakPliku,
+      };
+      try { zapiszAtomowo(plik, JSON.stringify(info, null, 1) + '\n'); } catch (e) { log.error(`Nie udało się zapisać ${plik}: ${e.message}`); }
+      return info;
+    }
+    // ślad po wcześniejszym odtworzeniu (np. serwer uruchomiony ponownie) — pokazujemy go jeszcze 30 dni
+    try {
+      const info = JSON.parse(fs.readFileSync(plik, 'utf8'));
+      if (czyObiekt(info) && typeof info.id === 'string' && Date.now() - Date.parse(info.kiedy) < 30 * 24 * 3600 * 1000) return info;
+      fs.unlinkSync(plik);
+    } catch (e) { /* brak śladu */ }
+    return null;
   }
 
   async function obsluzApi(req, res, sciezka) {
     const metoda = req.method;
     if (sciezka === '/api/ping') {
       if (metoda !== 'GET' && metoda !== 'HEAD') throw bladApi(405, 'method_not_allowed', 'Dozwolone: GET');
-      return wyslijJson(res, 200, { app: APP, version: VERSION, mode: 'server' });
+      return wyslijJson(res, 200, { app: APP, version: VERSION, mode: 'server', ...(odtworzenie ? { odtworzenie } : {}) });
+    }
+    if (sciezka === '/api/rev') {
+      // tanie sprawdzenie aktualności lustra danych w przeglądarce (patrz revRozeslany)
+      if (metoda !== 'GET' && metoda !== 'HEAD') throw bladApi(405, 'method_not_allowed', 'Dozwolone: GET');
+      return wyslijJson(res, 200, { rev: revRozeslany, serverId });
     }
     if (sciezka === '/api/snapshot') {
       if (metoda !== 'GET') throw bladApi(405, 'method_not_allowed', 'Dozwolone: GET');
       await baza.poZapisie(); // nie pokazuj zmian, które jeszcze nie są na dysku
-      return wyslijJson(res, 200, { ...baza.snapshot(), serverId, version: VERSION });
+      return wyslijJson(res, 200, { ...baza.snapshot(), serverId, version: VERSION, ...(odtworzenie ? { odtworzenie } : {}) });
     }
     if (sciezka === '/api/write') {
       if (metoda !== 'POST') throw bladApi(405, 'method_not_allowed', 'Dozwolone: POST');
@@ -594,10 +729,18 @@ function stworzSerwer(cfg, log) {
       if (b.data !== undefined && b.data !== null && !czyObiekt(b.data)) throw bladApi(400, 'invalid_argument', 'Pole "data" musi być obiektem');
       const ttl = Math.min(600000, Math.max(1000, Number(b.ttlMs) || 30000));
       const teraz = Date.now(), klucz = `${b.coll}\u0000${b.id}`, obecna = dzierzawy.get(klucz);
-      if (obecna && obecna.holder !== b.holder && obecna.exp > teraz) return wyslijJson(res, 200, { acquired: false, expiresAt: new Date(obecna.exp).toISOString() });
-      if (dzierzawy.size > 1000) for (const [k, d] of dzierzawy) if (d.exp <= teraz) dzierzawy.delete(k);
-      const moja = { holder: b.holder, exp: teraz + ttl, ver: (obecna ? obecna.ver : 0) + 1 };
+      const wazna = (d) => d && (d.czeka || d.exp > teraz);
+      if (wazna(obecna) && obecna.holder !== b.holder) return wyslijJson(res, 200, { acquired: false, expiresAt: new Date(obecna.exp).toISOString() });
+      if (dzierzawy.size > 1000) for (const [k, d] of dzierzawy) if (!wazna(d)) dzierzawy.delete(k);
+      const odnowienie = !!(obecna && obecna.holder === b.holder && !obecna.czeka && obecna.exp > teraz);
+      const moja = { holder: b.holder, exp: teraz + ttl, ver: (obecna ? obecna.ver : 0) + 1, czeka: !odnowienie };
       dzierzawy.set(klucz, moja); // przed jakimkolwiek await — drugie żądanie już widzi dzierżawę
+      if (!odnowienie) {
+        // Nowy posiadacz: zapisy poprzedniego (np. licznik WZ/PZ zapisany tuż przed wygaśnięciem jego
+        // dzierżawy, a na wolnym dysku NAS-a wciąż zapisywany) muszą być na dysku i rozesłane, zanim
+        // nowy posiadacz dostanie dzierżawę i przeczyta stan. Czas dzierżawy liczy się od tej chwili.
+        try { await baza.poZapisie(); } finally { moja.czeka = false; moja.exp = Date.now() + ttl; }
+      }
       let change = null;
       if (b.data && Object.keys(b.data).length) {
         const m = baza.kolekcje.get(b.coll);
@@ -607,7 +750,8 @@ function stworzSerwer(cfg, log) {
         rozeslij(zmiany, typeof b.clientId === 'string' ? b.clientId.slice(0, 100) : null);
         if (zmiany.length) change = { coll: b.coll, id: b.id, rev: zmiany[0].rev, data: zmiany[0].data };
       }
-      return wyslijJson(res, 200, { acquired: true, version: moja.ver, expiresAt: new Date(moja.exp).toISOString(), holder: b.holder, change });
+      // rev: przeglądarka zgłasza przyznanie dopiero, gdy jej lustro danych obejmuje tę zmianę
+      return wyslijJson(res, 200, { acquired: true, version: moja.ver, expiresAt: new Date(moja.exp).toISOString(), holder: b.holder, change, rev: revRozeslany, serverId });
     }
     if (sciezka === '/api/events') {
       if (metoda !== 'GET') throw bladApi(405, 'method_not_allowed', 'Dozwolone: GET');
@@ -620,7 +764,8 @@ function stworzSerwer(cfg, log) {
       req.socket.setTimeout(0); req.socket.setNoDelay(true); req.socket.setKeepAlive(true, 20000);
       res.write(`:${' '.repeat(2048)}\n`); // „rozpycha” bufory niektórych proxy
       res.write('retry: 2000\n\n');
-      res.write(`event: hello\ndata: ${JSON.stringify({ rev: baza.revZapisany, serverId })}\n\n`);
+      // strumień dostarczy po kolei wszystkie zmiany o numerach > rev
+      res.write(`event: hello\ndata: ${JSON.stringify({ rev: revRozeslany, serverId })}\n\n`);
       klienciSse.add(res);
       const koniec = () => klienciSse.delete(res);
       req.on('close', koniec); res.on('error', koniec);
@@ -640,8 +785,8 @@ function stworzSerwer(cfg, log) {
     const mA = /^\/api\/assets\/([^/]+)$/.exec(sciezka);
     if (mA) {
       if (metoda !== 'DELETE') throw bladApi(405, 'method_not_allowed', 'Dozwolone: DELETE');
-      const id = decodeURIComponent(mA[1]);
-      if (!ASSET_ID_RE.test(id)) throw bladApi(400, 'invalid_argument', 'Nieprawidłowy identyfikator');
+      const id = dekoduj(mA[1]);
+      if (id === null || !ASSET_ID_RE.test(id)) throw bladApi(400, 'invalid_argument', 'Nieprawidłowy identyfikator');
       const byl = await baza.usunZalacznik(id);
       return wyslijJson(res, 200, { ok: true, existed: byl });
     }
@@ -670,7 +815,7 @@ function stworzSerwer(cfg, log) {
       'Content-Type': meta.contentType, 'Content-Length': st.size, 'ETag': etag,
       'Cache-Control': 'private, max-age=31536000, immutable',
       // obraz SVG otwarty bezpośrednio nie może uruchomić skryptów
-      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
+      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; frame-ancestors 'none'",
     };
     if (req.headers['if-none-match'] === etag) { res.writeHead(304, { 'ETag': etag, 'Cache-Control': nag['Cache-Control'] }); return res.end(); }
     res.writeHead(200, nag);
@@ -686,6 +831,13 @@ function stworzSerwer(cfg, log) {
     let sc;
     try { sc = decodeURIComponent(sciezkaSurowa); } catch (e) { return wyslijTekst(res, 400, 'Nieprawidłowy adres'); }
     if (sc.includes('\0') || sc.includes('\\')) return wyslijTekst(res, 404, 'Nie znaleziono');
+    if (sc.length > 1 && sc.endsWith('/')) {
+      // /index.html/ podawałoby stronę, ale jej względne adresy (czcionki, runtime-lokalny.js) wskazywałyby
+      // w złe miejsce — aplikacja nie miałaby bazy. Przekierowanie względne działa też za odwrotnym proxy.
+      if (sc === '/index.html/') { res.writeHead(301, { Location: '../', 'Cache-Control': 'no-store', 'Content-Length': 0 }); return res.end(); }
+      return wyslijTekst(res, 404, 'Nie znaleziono');
+    }
+    if (sc.includes('//')) return wyslijTekst(res, 404, 'Nie znaleziono');
     if (sc === '/') sc = '/index.html';
     const segmenty = sc.split('/').filter(Boolean);
     if (!segmenty.length || segmenty.some(s => s.startsWith('.') || s.includes(':'))) return wyslijTekst(res, 404, 'Nie znaleziono');
@@ -716,17 +868,39 @@ function stworzSerwer(cfg, log) {
 
   const serwer = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    let sciezka;
-    try { sciezka = new URL(req.url, 'http://localhost').pathname; } catch (e) { return wyslijTekst(res, 400, 'Nieprawidłowy adres'); }
-    if (!autoryzowany(req)) {
+    // aplikacji nie wolno osadzić w ramce na obcej stronie (clickjacking)
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    if (!dozwolonyHost(req.headers.host, cfg.hosty)) {
       req.resume();
+      const host = String(req.headers.host).slice(0, 200);
+      if (odrzuconeHosty.size < 100 && !odrzuconeHosty.has(host)) {
+        odrzuconeHosty.add(host);
+        log.warn(`Odrzucono żądanie z nieznaną nazwą serwera (Host: ${host}). Jeśli to Twój adres (np. odwrotny serwer proxy, własna domena), dopisz go do EP_HOSTY.`);
+      }
+      return wyslijTekst(res, 403, `Nieznana nazwa serwera: ${host}\n\nEwidencja Palet odpowiada pod adresem IP, pod nazwą komputera w sieci lokalnej (np. nas, nas.local) i pod nazwami wpisanymi w zmiennej EP_HOSTY.\nJeśli otwierasz aplikację pod własną domeną (np. przez odwrotny serwer proxy), dopisz ją, np.:  EP_HOSTY=palety.example.pl`);
+    }
+    const surowa = String(req.url || '');
+    // tylko zwykła ścieżka: „//host/…” i adresy absolutne zmieniłyby znaczenie przy parsowaniu
+    if (surowa[0] !== '/' || surowa[1] === '/') { req.resume(); return wyslijTekst(res, 400, 'Nieprawidłowy adres'); }
+    let sciezka;
+    try { sciezka = new URL(surowa, 'http://localhost').pathname; } catch (e) { req.resume(); return wyslijTekst(res, 400, 'Nieprawidłowy adres'); }
+    const auth = autoryzacja(req);
+    if (!auth.ok) {
+      req.resume();
+      if (auth.blokada) return wyslijTekst(res, 429, `Za dużo błędnych haseł z tego urządzenia. Spróbuj ponownie za ${auth.blokada} s.`, { 'Retry-After': String(auth.blokada) });
       return wyslijTekst(res, 401, 'Podaj hasło, aby otworzyć Ewidencję Palet.', { 'WWW-Authenticate': 'Basic realm="Ewidencja Palet", charset="UTF-8"' });
     }
     try {
       if (sciezka.startsWith('/api/')) return await obsluzApi(req, res, sciezka);
-      if (sciezka.startsWith('/_blob/')) return obsluzBlob(req, res, decodeURIComponent(sciezka.slice(7)));
+      if (sciezka.startsWith('/_blob/')) {
+        const id = dekoduj(sciezka.slice(7));
+        if (id === null) return wyslijTekst(res, 400, 'Nieprawidłowy adres');
+        return obsluzBlob(req, res, id);
+      }
       return obsluzStatyczne(req, res, sciezka);
     } catch (e) {
+      if (e instanceof URIError) { e.api = true; e.status = 400; e.code = 'invalid_argument'; e.message = 'Nieprawidłowy adres'; }
       if (!e.api) log.error(`Błąd obsługi ${req.method} ${sciezka}: ${e.stack || e.message}`);
       if (res.headersSent) { res.destroy(); return undefined; }
       const status = e.api ? e.status : 500;
@@ -743,9 +917,12 @@ function stworzSerwer(cfg, log) {
     baza.przygotujKatalogi();
     dataDirReal = fs.realpathSync(cfg.dataDir); rootReal = fs.realpathSync(ROOT);
     const wynik = baza.wczytaj();
+    revRozeslany = baza.rev;
+    odtworzenie = zapamietajOdtworzenie(wynik);
     baza.kopiaDzienna();
     heartbeat = setInterval(() => {
-      const linia = `event: ping\ndata: ${JSON.stringify({ rev: baza.rev, t: Date.now() })}\n\n`;
+      // rev: wszystko do tego numeru zostało już wysłane tym strumieniem (klient z mniejszym — coś zgubił)
+      const linia = `event: ping\ndata: ${JSON.stringify({ rev: revRozeslany, t: Date.now() })}\n\n`;
       for (const res of klienciSse) res.write(linia);
     }, cfg.heartbeatMs);
     heartbeat.unref();
@@ -756,7 +933,7 @@ function stworzSerwer(cfg, log) {
     for (const res of klienciSse) { try { res.end(); } catch (e) { /* ignore */ } }
     klienciSse.clear();
   }
-  return { serwer, baza, start, zatrzymaj, klienciSse };
+  return { serwer, baza, start, zatrzymaj, klienciSse, revRozeslany: () => revRozeslany };
 }
 
 /* ---------------------------- uruchomienie ---------------------------- */
@@ -768,6 +945,34 @@ function adresyLan() {
     }
   }
   return out;
+}
+
+/** Komunikat po starcie (okno serwera / log kontenera). */
+function tekstStartowy(cfg, port, lan) {
+  const haslo = `  Hasło dostępu:      ${cfg.haslo ? 'włączone' : 'wyłączone — każdy w sieci lokalnej może otworzyć aplikację'}`;
+  if (cfg.docker) {
+    // W kontenerze adres IP i port są wewnętrzne dla Dockera (np. 172.18.0.2:8080) — z innych urządzeń
+    // wchodzi się na adres NAS-a i port wystawiony w docker-compose.yml, którego stąd nie widać.
+    return ['', '  Ewidencja Palet — serwer lokalny działa (w kontenerze Docker)', '',
+      '  Adres aplikacji:    http://ADRES-NAS:PORT',
+      '     ADRES-NAS — adres NAS-a (komputera z Dockerem) w sieci lokalnej, np. 192.168.1.10',
+      '                 (Synology: Panel sterowania → Sieć → Interfejs sieciowy, albo Synology Assistant)',
+      '     PORT      — liczba PRZED dwukropkiem w docker-compose.yml → ports (domyślnie 8080)',
+      '',
+      `  Dane zapisywane w:  folder podpięty w docker-compose.yml → volumes (domyślnie ./dane obok docker-compose.yml; w kontenerze ${cfg.dataDir})`,
+      haslo,
+      '', '  Zatrzymanie: Container Manager → Projekt → Zatrzymaj (albo: docker compose down).', ''].join('\n');
+  }
+  const tylkoLokalnie = cfg.host === '127.0.0.1' || cfg.host === 'localhost' || cfg.host === '::1';
+  const linie = ['', '  Ewidencja Palet — serwer lokalny działa', '',
+    `  Na tym komputerze:  http://localhost:${port}`];
+  if (!tylkoLokalnie) {
+    if (lan.length) for (const a of lan) linie.push(`  W sieci lokalnej:   http://${a.adres}:${port}   (${a.nazwa})`);
+    else linie.push('  W sieci lokalnej:   (nie wykryto połączenia sieciowego)');
+  } else linie.push('  (HOST=127.0.0.1 — serwer dostępny tylko z tego komputera)');
+  linie.push('', `  Dane zapisywane w:  ${cfg.dataDir}`, haslo,
+    '', '  Aby zatrzymać serwer, naciśnij Ctrl+C (albo zamknij to okno).', '');
+  return linie.join('\n');
 }
 
 function otworzPrzegladarke(url) {
@@ -844,6 +1049,8 @@ function main() {
         '     (np. w File Station: Właściwości → Uprawnienia → Wszyscy: Odczyt/Zapis) albo ustaw w docker-compose.yml',
         '     „user: "UID:GID"” swojego użytkownika (sprawdzisz poleceniem: id).',
       ].join('\n'));
+    } else if (e.code === 'EISDIR') {
+      console.error(`BŁĄD: ${path.join(cfg.dataDir, 'baza.json')} jest folderem, a powinien być plikiem bazy.\n  Zmień nazwę tego folderu (albo go usuń, jeśli jest pusty) i uruchom serwer ponownie.`);
     } else console.error(`BŁĄD startu serwera: ${e.stack || e.message}`);
     process.exit(1);
   }
@@ -864,20 +1071,8 @@ function main() {
   });
 
   serwer.listen(cfg.port, cfg.host, () => {
-    const port = serwer.address().port;
-    const tylkoLokalnie = cfg.host === '127.0.0.1' || cfg.host === 'localhost' || cfg.host === '::1';
-    const linie = ['', '  Ewidencja Palet — serwer lokalny działa', '',
-      `  Na tym komputerze:  http://localhost:${port}`];
-    if (!tylkoLokalnie) {
-      const lan = adresyLan();
-      if (lan.length) for (const a of lan) linie.push(`  W sieci lokalnej:   http://${a.adres}:${port}   (${a.nazwa})`);
-      else linie.push('  W sieci lokalnej:   (nie wykryto połączenia sieciowego)');
-    } else linie.push('  (HOST=127.0.0.1 — serwer dostępny tylko z tego komputera)');
-    linie.push('', `  Dane zapisywane w:  ${cfg.dataDir}`,
-      `  Hasło dostępu:      ${cfg.haslo ? 'włączone (EP_HASLO)' : 'wyłączone — każdy w sieci lokalnej może otworzyć aplikację'}`,
-      '', '  Aby zatrzymać serwer, naciśnij Ctrl+C (albo zamknij to okno).', '');
-    console.log(linie.join('\n'));
-    if (cfg.otworz) otworzPrzegladarke(`http://localhost:${port}`);
+    console.log(tekstStartowy(cfg, serwer.address().port, adresyLan()));
+    if (cfg.otworz && !cfg.docker) otworzPrzegladarke(`http://localhost:${serwer.address().port}`);
   });
 
   let zamykanie = false;
@@ -901,5 +1096,5 @@ function main() {
   if (process.platform === 'win32') process.on('SIGBREAK', () => zamknij('SIGBREAK'));
 }
 
-module.exports = { stworzSerwer, konfiguracja, Baza, zapiszAtomowo, ID_RE, VERSION, APP };
+module.exports = { stworzSerwer, konfiguracja, Baza, zapiszAtomowo, dozwolonyHost, tekstStartowy, ID_RE, VERSION, APP };
 if (require.main === module) main();

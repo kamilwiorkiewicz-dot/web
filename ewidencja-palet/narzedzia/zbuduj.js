@@ -130,7 +130,7 @@ function main(argv) {
     if (tylkoSprawdz) {
       const obecny = fs.existsSync(wyjscie) ? fs.readFileSync(wyjscie, 'utf8') : null;
       if (obecny !== out) { console.error(`✗ ${path.relative(process.cwd(), wyjscie) || wyjscie} jest nieaktualny — uruchom: node narzedzia/zbuduj.js`); return 1; }
-      console.log('✓ index.html jest aktualny względem zrodlo/aplikacja.html');
+      console.log(`✓ ${path.relative(process.cwd(), wyjscie) || wyjscie} jest aktualny względem ${path.relative(process.cwd(), zrodlo) || zrodlo}`);
       return 0;
     }
     zapiszAtomowo(wyjscie, out);

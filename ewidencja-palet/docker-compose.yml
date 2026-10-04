@@ -8,7 +8,7 @@ services:
     container_name: ewidencja-palet
     restart: unless-stopped
     ports:
-      - "8080:8080"            # zmiana portu na NAS-ie: "8090:8080"
+      - "8080:8080"            # zmiana portu na NAS-ie: "8090:8080" (zmienia się tylko liczba PRZED dwukropkiem)
     volumes:
       - ./dane:/app/dane
     # Folder ./dane na NAS-ie należy zwykle do Twojego użytkownika DSM (a gdy go nie ma, Docker tworzy go
@@ -20,6 +20,18 @@ services:
     environment:
       - TZ=Europe/Warsaw
       - EP_UZYTKOWNIK=auto
-      # Hasło do aplikacji (zalecane, gdy NAS jest dostępny z internetu). Odkomentuj i wpisz własne;
-      # przeglądarka zapyta o nie przy wejściu, nazwa użytkownika może być dowolna:
-      # - EP_HASLO=wpisz-tu-swoje-haslo
+      # HASŁO do aplikacji (zalecane, gdy NAS jest dostępny z internetu). Przeglądarka zapyta o nie przy
+      # wejściu, nazwa użytkownika może być dowolna. Wybierz JEDEN z dwóch sposobów:
+      #
+      # Sposób A (najpewniejszy, hasło może zawierać dowolne znaki): utwórz w folderze „dane” plik
+      # haslo.txt z hasłem w pierwszej linii i odkomentuj linię niżej (usuń samo „# ” z jej początku):
+      # - EP_HASLO_PLIK=/app/dane/haslo.txt
+      #
+      # Sposób B: hasło wpisane tutaj. Całość w APOSTROFACH, a każdy znak $ wpisz PODWÓJNIE ($$);
+      # apostrof w haśle wpisz podwójnie (''). Przykład: hasło  Ab$12 #x  wpisz jako:
+      # - 'EP_HASLO=Ab$$12 #x'
+      # Bez apostrofów Docker Compose po cichu obcina hasło od „ #” i zamienia „$słowo” na pusty tekst.
+      #
+      # WŁASNA DOMENA (odwrotny serwer proxy z HTTPS, DDNS, np. palety.twojanazwa.synology.me): serwer
+      # odpowiada tylko pod adresem IP i nazwami lokalnymi (ochrona przed „DNS rebinding”). Dopisz domenę:
+      # - EP_HOSTY=palety.twojanazwa.synology.me

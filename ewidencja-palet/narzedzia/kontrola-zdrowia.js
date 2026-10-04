@@ -1,8 +1,13 @@
 // Kontrola zdrowia kontenera (Docker HEALTHCHECK): kod 0, gdy serwer odpowiada na /api/ping.
-// Działa także z włączonym hasłem (EP_HASLO).
+// Działa także z włączonym hasłem (EP_HASLO albo EP_HASLO_PLIK).
 'use strict';
 const http = require('http');
-const haslo = process.env.EP_HASLO;
+const fs = require('fs');
+let haslo = process.env.EP_HASLO;
+if (process.env.EP_HASLO_PLIK) {
+  try { haslo = fs.readFileSync(process.env.EP_HASLO_PLIK, 'utf8').replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)[0]; }
+  catch (e) { process.exit(1); }
+}
 const req = http.get({
   host: '127.0.0.1',
   port: Number(process.env.PORT) || 8080,

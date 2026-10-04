@@ -4,11 +4,14 @@ FROM node:22-alpine
 
 # Strefa czasowa (daty kopii dziennych): Node ma wbudowaną bazę stref (ICU), więc TZ=Europe/Warsaw
 # działa bez pakietu tzdata — obraz buduje się bez dostępu do repozytoriów Alpine.
+# EP_DOCKER=1: serwer wie, że działa w kontenerze — w logu nie podaje wewnętrznego adresu Dockera
+# (np. 172.18.0.2) jako adresu w sieci lokalnej, tylko wskazówkę: adres NAS-a i port z docker-compose.yml.
 ENV NODE_ENV=production \
     PORT=8080 \
     HOST=0.0.0.0 \
     DATA_DIR=/app/dane \
-    TZ=Europe/Warsaw
+    TZ=Europe/Warsaw \
+    EP_DOCKER=1
 
 WORKDIR /app
 COPY --chown=node:node server.js index.html runtime-lokalny.js ./
