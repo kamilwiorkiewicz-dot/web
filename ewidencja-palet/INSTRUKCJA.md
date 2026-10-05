@@ -105,9 +105,11 @@ Dane trafiają do podfolderu `dane/` w tym samym folderze na NAS-ie, więc prze�
 
 1. W wersji online (Claude): **Ustawienia i kopia → Pobierz kopię (.json)**.
 2. W wersji lokalnej: **Ustawienia i kopia → Wczytaj kopię z pliku** → wybierz pobrany plik.
-3. Wybierz **Zastąp wszystko** (pierwsze przeniesienie — w świeżej, pustej aplikacji jest wybrane od razu) albo **Połącz** (dopisanie brakujących operacji, nic nie jest usuwane).
+3. Wybierz **Zastąp wszystko**. To właściwy wybór przy przenoszeniu z wersji online — także wtedy, gdy w wersji lokalnej wpisano wcześniej coś na próbę (w świeżej, pustej aplikacji ta opcja jest zaznaczona od razu).
 
-Przenoszą się kurierzy (z logo, kolejnością, nazwami i stanem początkowym), wszystkie operacje i numery dokumentów WZ/PZ — kolejne numery będą kontynuacją dotychczasowych. W drugą stronę działa tak samo.
+Przy **Zastąp wszystko** przenoszą się kurierzy (z logo, kolejnością, nazwami i stanem początkowym), wszystkie operacje i numery dokumentów WZ/PZ — kolejne numery będą kontynuacją dotychczasowych. W drugą stronę działa tak samo.
+
+**Połącz** służy do dopisania brakujących operacji, gdy pracowano w dwóch miejscach naraz. Nic nie jest wtedy usuwane: istniejący kurierzy zachowują swoje nazwy, kolory i kolejność (u kurierów, którzy nie mają stanu początkowego albo logo, zostaną one uzupełnione z pliku), a operacje z pliku, których numer dokumentu jest tu już zajęty przez inną operację, dostaną nowe numery. Okno wczytywania pokazuje te różnice przed zapisem.
 
 ## Kopie zapasowe
 

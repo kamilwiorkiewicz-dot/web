@@ -2165,7 +2165,7 @@ function dataIssues(){
   Object.entries(byNr).forEach(([nr,list])=>{
     if(list.length>1){
       const sorted = list.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
-      issues.push({level:'warn', text:`Numer dokumentu <b>${escapeHtml(nr)}</b> ma ${opsLabel(list.length)} (zapisane jednocześnie z dwóch urządzeń).`, actions:[{label:'Nadaj nowe numery', act:'renumber', ids:sorted.slice(1).map(t=>t.id).join(',')}]});
+      issues.push({level:'warn', text:`Numer dokumentu <b>${escapeHtml(nr)}</b> ma ${opsLabel(list.length)} (np. po połączeniu kopii albo zapisie w tej samej chwili z dwóch urządzeń).`, actions:[{label:'Nadaj nowe numery', act:'renumber', ids:sorted.slice(1).map(t=>t.id).join(',')}]});
     }
   });
   // more returned than issued
@@ -2281,6 +2281,32 @@ function parseBackup(text){
 }
 
 let importRunning = false;
+// Plan for "Połącz": existing couriers keep their name/colour/order, but get the opening balance and
+// logo from the file where they have none; file operations whose document number is already used here
+// by another operation get a new number instead of creating a duplicate.
+function planMerge(parsed){
+  const cById = new Map(couriers.map(c=>[c.id,c]));
+  const txIds = new Set(transactions.map(t=>t.id));
+  const map = buildDocketMap();
+  const usedNr = new Map(); transactions.forEach(t=>{ if(map[t.id]) usedNr.set(map[t.id], t.id); });
+  const fills = [], differ = [];
+  parsed.couriers.forEach(fc=>{
+    const lc = cById.get(fc.id); if(!lc || isUntouchedDefault(lc)) return;
+    const patch = {};
+    if(!lc.openingWydane && fc.data.openingWydane) patch.openingWydane = fc.data.openingWydane;
+    if(!lc.openingZwrot && fc.data.openingZwrot) patch.openingZwrot = fc.data.openingZwrot;
+    if(!lc.logoAssetId && !lc.noLogo && fc.data.logoAssetId && parsed.logos[fc.data.logoAssetId]) patch.logoAssetId = fc.data.logoAssetId;
+    if(Object.keys(patch).length) fills.push({id:fc.id, name:lc.name, patch});
+    const diffs = [];
+    if((fc.data.name||'')!==(lc.name||'')) diffs.push(`nazwa w pliku „${fc.data.name}”`);
+    if(lc.openingWydane && fc.data.openingWydane && lc.openingWydane!==fc.data.openingWydane) diffs.push(`stan początkowy wydanych w pliku ${num(fc.data.openingWydane)}`);
+    if(lc.openingZwrot && fc.data.openingZwrot && lc.openingZwrot!==fc.data.openingZwrot) diffs.push(`stan początkowy zwróconych w pliku ${num(fc.data.openingZwrot)}`);
+    if((fc.data.enabled!==false)!==(lc.enabled!==false)) diffs.push(fc.data.enabled===false ? 'w pliku nieaktywny' : 'w pliku aktywny');
+    if(diffs.length) differ.push({name:lc.name, diffs});
+  });
+  const renumber = parsed.transactions.filter(t=> !txIds.has(t.id) && t.data.nr && usedNr.has(t.data.nr) && usedNr.get(t.data.nr)!==t.id).map(t=>t.id);
+  return {fills, differ, renumber};
+}
 // a default courier only auto-created on first start and never changed in any way
 function isUntouchedDefault(c){
   const d = DEFAULT_COURIERS.find(x=>x.id===c.id);
@@ -2294,6 +2320,7 @@ async function importBackupFile(file){
   let parsed;
   try{ parsed = parseBackup(await file.text()); }catch(e){ toast(e.message, true); return; }
   const fresh = isFreshInstall();
+  const plan = planMerge(parsed);
   const txIds = new Set(transactions.map(t=>t.id));
   const common = parsed.transactions.filter(t=>txIds.has(t.id)).length;
   const dates = parsed.transactions.map(t=>t.data.data).sort();
@@ -2302,7 +2329,12 @@ async function importBackupFile(file){
     <h2>Wczytać kopię?</h2>
     <div class="modal-sub">Plik${when && !isNaN(when) ? ` z ${when.toLocaleDateString('pl-PL')} ${when.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})}` : ''}: kurierzy ${num(parsed.couriers.length)}, ${opsLabel(parsed.transactions.length)}${dates.length ? ` (${fmtDate(dates[0])} – ${fmtDate(dates[dates.length-1])})` : ''}.${parsed.skipped ? ` Pominięto uszkodzone wpisy: ${num(parsed.skipped)}.` : ''}<br>Teraz w aplikacji: kurierzy ${num(couriers.length)}, ${opsLabel(transactions.length)}; te same operacje w obu: ${num(common)}.</div>
     <div style="display:flex; flex-direction:column; gap:10px;">
-      <label class="import-opt"><input type="radio" name="importMode" value="merge" ${fresh ? '' : 'checked'}><span><b>Połącz</b> — dodaj z pliku tylko to, czego tu brakuje. Nic nie zostanie usunięte ani nadpisane.</span></label>
+      <label class="import-opt"><input type="radio" name="importMode" value="merge" ${fresh ? '' : 'checked'}><span><b>Połącz</b> — dodaj z pliku tylko to, czego tu brakuje. Nic nie zostanie usunięte ani nadpisane.${
+        (plan.fills.length || plan.differ.length || plan.renumber.length) ? `<span style="display:block; margin-top:6px; font-size:12.5px;">${[
+          plan.fills.length ? `Uzupełnione z pliku (tu brak): ${plan.fills.map(f=>escapeHtml(f.name)).join(', ')} — stan początkowy lub logo.` : '',
+          plan.differ.length ? `Zostaną tutejsze ustawienia: ${plan.differ.map(d=>`${escapeHtml(d.name)} (${d.diffs.map(escapeHtml).join(', ')})`).join('; ')}.` : '',
+          plan.renumber.length ? `<b style="color:var(--bad);">${opsLabel(plan.renumber.length)} z pliku ${plForm(plan.renumber.length,'ma numer dokumentu zajęty','mają numery dokumentów zajęte','ma numery dokumentów zajęte')} tutaj przez inne operacje — ${plForm(plan.renumber.length,'dostanie nowy numer','dostaną nowe numery','dostanie nowe numery')}.</b> Przy przenoszeniu z wersji online wybierz raczej „Zastąp wszystko”.` : '',
+        ].filter(Boolean).join('<br>')}</span>` : ''}</span></label>
       <label class="import-opt"><input type="radio" name="importMode" value="replace" ${fresh ? 'checked' : ''}><span><b>Zastąp wszystko</b> — usuń obecnych kurierów i operacje i odtwórz dokładnie stan z pliku.</span></label>
     </div>
     <div class="modal-close-row"><button type="button" class="btn" data-action="close-modal">Anuluj</button><button type="button" class="btn btn-primary" id="importGo">${ICONS.upload}Wczytaj</button></div>
@@ -2333,6 +2365,8 @@ async function runImport(parsed, mode){
     addC.forEach(c=>{ if(taken.has(c.data.order) || !Number.isFinite(c.data.order)) c.data.order = ++nextOrder; taken.add(c.data.order); nextOrder = Math.max(nextOrder, c.data.order); });
   }
   const addT = parsed.transactions.filter(t=> mode==='replace' || !txById.has(t.id));
+  const plan = mode==='merge' ? planMerge(parsed) : {fills:[], differ:[], renumber:[]};
+  const renumberSet = new Set(plan.renumber);
   if(info.mode==='claude'){
     const finalCount = mode==='replace' ? parsed.couriers.length + parsed.transactions.length + 1 : couriers.length + transactions.length + 1 + addC.length + addT.length;
     if(finalCount > ONLINE_DOC_LIMIT - 20){ toast(`Za dużo danych dla bazy online (${num(finalCount)} z ${num(ONLINE_DOC_LIMIT)} wpisów). Użyj wersji lokalnej.`, true); return; }
@@ -2354,13 +2388,25 @@ async function runImport(parsed, mode){
     }
   }
   addC.forEach(c=>{ const d = {...c.data}; if(d.logoAssetId){ if(logoMap[d.logoAssetId]) d.logoAssetId = logoMap[d.logoAssetId]; else if(!(mode==='replace' && cById.get(c.id) && cById.get(c.id).logoAssetId===d.logoAssetId)) delete d.logoAssetId; } writes.push({op:'set', coll:'couriers', id:c.id, data:d}); });
-  addT.forEach(t=> writes.push({op:'set', coll:'transactions', id:t.id, data:t.data}));
+  // merge: fill what existing couriers lack (opening balance, logo)
+  for(const f of plan.fills){
+    const patch = {...f.patch};
+    if(patch.logoAssetId){
+      const du = parsed.logos[patch.logoAssetId]; delete patch.logoAssetId;
+      if(du && assetsApi && typeof du==='string' && du.startsWith('data:image/')){
+        try{ const res = await assetsApi.upload(dataUrlToBlob(du)); patch.logoAssetId = res.id; patch.noLogo = false; }catch(e){ console.warn('logo', e); }
+      }
+    }
+    if(Object.keys(patch).length) writes.push({op:'update', coll:'couriers', id:f.id, data:patch});
+  }
+  // a number already used here by another operation is dropped now and a new one is given below
+  addT.forEach(t=>{ const d = {...t.data}; if(renumberSet.has(t.id)){ delete d.nr; delete d.nrAt; } writes.push({op:'set', coll:'transactions', id:t.id, data:d}); });
   let done = 0, failed = 0; const queue = writes.slice();
   const progress = ()=>{ const el = document.getElementById('importProgress'), bar = document.getElementById('importBar'); if(el) el.textContent = `Zapisano ${num(done)} z ${num(writes.length)}…`; if(bar) bar.style.width = (writes.length ? done/writes.length*100 : 100).toFixed(1)+'%'; };
   const worker = async ()=>{
     while(queue.length){
       const w = queue.shift();
-      try{ const ref = db.collection(w.coll).doc(w.id); if(w.op==='delete') await ref.delete(); else await ref.set(w.data); }
+      try{ const ref = db.collection(w.coll).doc(w.id); if(w.op==='delete') await ref.delete(); else if(w.op==='update') await ref.update(w.data); else await ref.set(w.data); }
       catch(e){ failed++; console.error('import', w, e); }
       done++; if(done%5===0 || done===writes.length) progress();
     }
@@ -2371,7 +2417,7 @@ async function runImport(parsed, mode){
       const chunk = queue.splice(0, 400);
       try{
         const b = db.batch();
-        chunk.forEach(w=>{ const ref = db.collection(w.coll).doc(w.id); if(w.op==='delete') b.delete(ref); else b.set(ref, w.data); });
+        chunk.forEach(w=>{ const ref = db.collection(w.coll).doc(w.id); if(w.op==='delete') b.delete(ref); else if(w.op==='update') b.update(ref, w.data); else b.set(ref, w.data); });
         await b.commit();
       }catch(e){ failed += chunk.length; console.error('import batch', e); }
       done += chunk.length; progress();
@@ -2393,6 +2439,14 @@ async function runImport(parsed, mode){
     });
     if(!(settings && settings.seeded)){ await db.doc('meta/settings').set({...(settings||{}), seeded:true}); }
   }catch(e){ failed++; console.error(e); }
+  // new numbers for imported operations whose number was taken here (still inside the import, so the
+  // automatic numbering of un-numbered operations can't run in between)
+  let renumbered = 0;
+  for(const id of plan.renumber){
+    const t = parsed.transactions.find(x=>x.id===id); if(!t) continue;
+    try{ const nr = await allocDocket(t.data.typ); await db.collection('transactions').doc(id).update({nr, nrAt: Date.now()}); renumbered++; }
+    catch(e){ failed++; console.error('renumber', id, e); }
+  }
   couriersSeeded = true; importRunning = false; bulkWriting = false; docketMigrationDone = false;
   // imported operations older than the live window are not delivered by the subscription — reload that part
   olderTx.clear(); olderBoundary = null;
@@ -2400,7 +2454,7 @@ async function runImport(parsed, mode){
   else historyComplete = true;
   closeModal(); mergeTransactions(); render(); migrateDockets();
   if(failed) toast(`Wczytano z błędami: nie zapisano ${num(failed)} z ${num(writes.length)} wpisów. Spróbuj ponownie (tryb „Połącz” uzupełni braki).`, true);
-  else toast(`Wczytano kopię: kurierzy ${num(addC.length)}, ${opsLabel(addT.length)}${mode==='replace' && writes.some(w=>w.op==='delete') ? `, usunięto ${num(writes.filter(w=>w.op==='delete').length)}` : ''}.`);
+  else toast(`Wczytano kopię: kurierzy ${num(addC.length)}, ${opsLabel(addT.length)}${mode==='replace' && writes.some(w=>w.op==='delete') ? `, usunięto ${num(writes.filter(w=>w.op==='delete').length)}` : ''}${plan.fills.length ? `, uzupełniono dane kurierów: ${num(plan.fills.length)}` : ''}${renumbered ? `, nowe numery dokumentów: ${num(renumbered)}` : ''}${plan.differ.length ? `; tutejsze ustawienia zachowane u: ${plan.differ.map(d=>d.name).join(', ')}` : ''}.`);
 }
 
 async function handleIssueAction(btn){
