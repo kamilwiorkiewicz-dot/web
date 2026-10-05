@@ -35,3 +35,6 @@ services:
       # WŁASNA DOMENA (odwrotny serwer proxy z HTTPS, DDNS, np. palety.twojanazwa.synology.me): serwer
       # odpowiada tylko pod adresem IP i nazwami lokalnymi (ochrona przed „DNS rebinding”). Dopisz domenę:
       # - EP_HOSTY=palety.twojanazwa.synology.me
+      # Za odwrotnym serwerem proxy wszyscy łączą się z adresu proxy — żeby kilka pomyłek jednej osoby
+      # nie wstrzymywało logowania wszystkim, odkomentuj też (błędne hasła liczone osobno dla każdego):
+      # - EP_ZAUFANE_PROXY=1

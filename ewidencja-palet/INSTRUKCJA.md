@@ -69,6 +69,12 @@ Po uruchomieniu otworzy się okno z serwerem i przeglądarka z adresem http://lo
 
 Adres aplikacji zmieni się wtedy na `http://localhost:8090` (na telefonie to ten sam adres co wcześniej, tylko z `:8090` na końcu).
 
+**Hasło dostępu** (opcjonalne, przydaje się, gdy w sieci są obce urządzenia, np. Wi-Fi dla klientów w tej samej sieci). Przeglądarka zapyta o nie przy wejściu; nazwa użytkownika może być dowolna.
+- **Windows:** otwórz `Uruchom serwer (Windows).bat` do edycji jak przy zmianie portu. Znajdź linię `rem set "EP_HASLO=twoje haslo"`, usuń z jej początku `rem ` i zamiast `twoje haslo` wpisz swoje hasło (znak `%` wpisz podwójnie: `%%`). Zapisz i uruchom plik ponownie.
+- **Mac / z terminala:** `EP_HASLO='twoje hasło' node server.js`.
+
+Po 5 różnych błędnych hasłach z jednego urządzenia serwer na chwilę wstrzymuje logowanie z niego (od 30 s do 15 min). Urządzenia, które są już zalogowane, działają w tym czasie normalnie. Po zmianie hasła odśwież aplikację na każdym urządzeniu — przeglądarka zapyta o nowe hasło (do tego czasu na górze widać pasek „Serwer wymaga hasła…” z przyciskiem **Odśwież stronę**).
+
 ## Sposób 3 — Synology NAS (Container Manager, DSM 7)
 
 Warunki:
@@ -92,9 +98,13 @@ Dane trafiają do podfolderu `dane/` w tym samym folderze na NAS-ie, więc prze�
   - **Hasło w pliku (najpewniejsze, dowolne znaki).** W folderze `dane` utwórz plik `haslo.txt` z samym hasłem w pierwszej linii (np. w Notatniku na komputerze, potem wgraj przez File Station). W `docker-compose.yml` odkomentuj linię `- EP_HASLO_PLIK=/app/dane/haslo.txt` (usuń `# ` z jej początku) i zbuduj projekt ponownie.
   - **Hasło wpisane w `docker-compose.yml`.** Odkomentuj linię `- 'EP_HASLO=…'` i wpisz hasło **między apostrofami**. Każdy znak `$` w haśle wpisz podwójnie (`$$`), apostrof też podwójnie (`''`). Przykład: hasło `Ab$12 #x` wpisujesz jako `- 'EP_HASLO=Ab$$12 #x'`. Bez apostrofów Docker po cichu obcina hasło od ` #` i zamienia `$słowo` na pusty tekst — działałoby wtedy inne hasło niż to, które znasz.
 
-  Po 5 błędnych hasłach z jednego urządzenia serwer na chwilę przestaje przyjmować z niego hasła: najpierw na 30 s, przy kolejnych pomyłkach dłużej, najwyżej na 15 min.
+  Po 5 różnych błędnych hasłach z jednego adresu serwer na chwilę przestaje przyjmować z niego hasła: najpierw na 30 s, przy kolejnych pomyłkach dłużej, najwyżej na 15 min. Urządzenia, które są już zalogowane, działają w tym czasie normalnie. To samo złe hasło wpisane kilka razy liczy się jako jedna pomyłka.
+
+  **Zmiana hasła:** zmień je w `haslo.txt` albo w `docker-compose.yml`, zatrzymaj projekt i uruchom go ponownie (po zmianie w `docker-compose.yml`: **Zbuduj**, potem **Uruchom**). Następnie odśwież aplikację na każdym urządzeniu i wpisz nowe hasło. Urządzenie ze starym hasłem pokazuje pasek „Serwer wymaga hasła…” z przyciskiem **Odśwież stronę** i do czasu odświeżenia nie zapisuje zmian.
 
   Przy dostępie z internetu używaj połączenia szyfrowanego (HTTPS), np. przez **Panel sterowania → Portal logowania → Zaawansowane → Odwrotny serwer proxy** z certyfikatem Let's Encrypt — bez HTTPS hasło idzie przez sieć jawnym tekstem. Domenę, pod którą otwierasz aplikację (np. `palety.twojanazwa.synology.me`), wpisz w `docker-compose.yml` w linii `- EP_HOSTY=…` (odkomentuj ją) — inaczej serwer odpowie „Nieznana nazwa serwera”.
+
+  Za odwrotnym serwerem proxy wszystkie urządzenia łączą się z serwerem z adresu proxy, więc 5 pomyłek jednej osoby wstrzymałoby logowanie wszystkim (zalogowanych to nie dotyczy). Odkomentuj wtedy w `docker-compose.yml` także linię `- EP_ZAUFANE_PROXY=1` — błędne hasła będą liczone osobno dla każdego urządzenia (serwer odczyta jego adres z nagłówka, który dodaje proxy). Nie włączaj tej opcji bez proxy: każdy w sieci mógłby wtedy podawać dowolny adres i obejść blokadę.
 - **Aktualizacja aplikacji** (dane zostają):
   1. **Container Manager → Projekt → ewidencja-palet → Akcja → Zatrzymaj.**
   2. Dla pewności skopiuj w File Station folder `dane` w bezpieczne miejsce.
@@ -127,7 +137,8 @@ Przy **Zastąp wszystko** przenoszą się kurierzy (z logo, kolejnością, nazwa
 - **Telefon nie otwiera adresu.** Telefon musi być w tej samej sieci Wi-Fi co komputer (nie w sieci „dla gości”). Przy pierwszym uruchomieniu zapora Windows pyta o zgodę dla Node.js — zezwól w sieciach prywatnych. Jeśli to nie pomaga, sprawdź profil sieci: **Ustawienia → Sieć i Internet → Wi-Fi** (albo **Ethernet**) → nazwa Twojej sieci → **Typ profilu sieci: Prywatna**; gdy sieć jest „Publiczna”, Windows blokuje połączenia z telefonów. Na Macu: jeśli w **Ustawienia systemowe → Sieć → Zapora** zapora jest włączona, zezwól na połączenia przychodzące dla programu „node”.
 - **Pasek „Brak połączenia z serwerem”.** Serwer nie odpowiada: jest wyłączony, komputer z serwerem jest uśpiony albo zerwało się Wi-Fi. Uruchom serwer ponownie; pasek zniknie sam, gdy tylko serwer odpowie.
 - **„Nie wczytano pliku runtime-lokalny.js”.** `index.html` otwarto bez reszty plików (np. skopiowany sam). Otwórz go z rozpakowanego folderu.
-- **„Nieznana nazwa serwera”.** Otwierasz aplikację pod własną domeną (odwrotny serwer proxy, DDNS). Ze względów bezpieczeństwa serwer odpowiada tylko pod adresem IP i nazwami z sieci lokalnej (np. `nas`, `nas.local`). Dopisz swoją domenę w zmiennej `EP_HOSTY` (kilka nazw rozdziel przecinkami): Docker — w `docker-compose.yml` odkomentuj linię `- EP_HOSTY=…`; Mac/Linux z terminala — `EP_HOSTY=palety.example.pl node server.js`.
-- **„Za dużo błędnych haseł z tego urządzenia”.** Odczekaj podany czas (od 30 s do 15 min) i wpisz hasło ponownie.
+- **„Nieznana nazwa serwera”.** Otwierasz aplikację pod własną domeną (odwrotny serwer proxy, DDNS). Ze względów bezpieczeństwa serwer odpowiada tylko pod adresem IP i nazwami z sieci lokalnej (np. `nas`, `nas.local`, `nas.lan`, `nas.home`, `nas.fritz.box`). Dopisz swoją domenę w zmiennej `EP_HOSTY` (kilka nazw rozdziel przecinkami): Docker — w `docker-compose.yml` odkomentuj linię `- EP_HOSTY=…`; Windows — w `Uruchom serwer (Windows).bat` usuń `rem ` z początku linii `rem set "EP_HOSTY=palety.example.pl"` i wpisz swoją domenę; Mac/Linux z terminala — `EP_HOSTY=palety.example.pl node server.js`.
+- **„Za dużo błędnych haseł. Logowanie jest chwilowo wstrzymane…”.** Odczekaj podany czas (od 30 s do 15 min) i wpisz hasło ponownie. Urządzenia, które są już zalogowane, działają w tym czasie normalnie. Jeśli zdarza się to często, a aplikacja działa za odwrotnym serwerem proxy — włącz `EP_ZAUFANE_PROXY` (sposób 3, „Hasło”).
+- **Pasek „Serwer wymaga hasła…” z przyciskiem „Odśwież stronę”.** Hasło na serwerze zmieniono albo przeglądarka je zapomniała. Kliknij **Odśwież stronę** i wpisz aktualne hasło. Do tego czasu zmiany nie są zapisywane — strona sama nie ponawia prób, żeby nie zablokować logowania starym hasłem.
 - **Komunikat „plik bazy na serwerze był uszkodzony…”.** Zobacz „Kopie zapasowe”: serwer odtworzył dane z kopii dziennej. Sprawdź ostatnie operacje i kliknij **Rozumiem**.
 - **Pusta ewidencja po otwarciu `index.html` w innej przeglądarce.** To normalne w sposobie 1 (każda przeglądarka ma swoje dane). Wczytaj kopię albo użyj sposobu 2.

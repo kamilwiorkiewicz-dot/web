@@ -4,6 +4,7 @@
 #   PORT=8090 ./uruchom.sh          inny port
 #   EP_HASLO=tajne ./uruchom.sh     dostęp tylko po podaniu hasła
 #   EP_HOSTY=palety.example.pl ./uruchom.sh   własna domena (np. za odwrotnym serwerem proxy)
+#   EP_ZAUFANE_PROXY=1 ./uruchom.sh  za odwrotnym proxy: błędne hasła liczone osobno dla każdego klienta
 #   ./uruchom.sh --otworz           dodatkowo otwiera przeglądarkę (komputer z ekranem)
 cd "$(dirname "$0")" || exit 1
 

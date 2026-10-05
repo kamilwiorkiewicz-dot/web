@@ -599,7 +599,12 @@
         if (r.status === 415) throw err(opts.asset ? 'unsupported_type' : 'invalid_argument', msg);
         if (r.status === 400) throw err(opts.asset ? 'invalid_request' : 'invalid_argument', msg);
         if (r.status === 507 || code === 'quota_exceeded') throw err('quota_exceeded', msg);
-        if (r.status === 401 || r.status === 429) { var a = err('unavailable', 'Serwer wymaga hasła — odśwież stronę, aby się zalogować.'); a.auth = true; throw a; }
+        if (r.status === 401) { var a = err('unavailable', 'Serwer wymaga hasła — odśwież stronę, aby się zalogować.'); a.auth = true; throw a; }
+        if (r.status === 429) {
+          var s = Math.max(0, Number(r.headers.get('Retry-After')) || 0);
+          var l = err('unavailable', 'Za dużo błędnych haseł — logowanie chwilowo wstrzymane' + (s ? ' (spróbuj ponownie za ' + (s < 120 ? s + ' s' : Math.ceil(s / 60) + ' min') + ')' : '') + '.');
+          l.auth = true; l.lock = s || true; throw l;
+        }
         if (r.status === 502 || r.status === 503 || r.status === 504) { var g = err('unavailable', 'Serwer nie odpowiada (' + r.status + ').'); g.network = true; throw g; }
         throw err('unavailable', msg);
       });
@@ -673,6 +678,7 @@
     this.retry = 0;
     this.reconnectTimer = null;
     this.offlineTimer = null;
+    this.authStop = null;        // serwer odrzucił hasło — bez prób w tle aż do odświeżenia strony
     this.hideTimer = null;
     this.assets = new Map();
   }
@@ -689,7 +695,8 @@
         }, function (e) {
           // nigdy nie przechodzimy po cichu na zapis w przeglądarce: dane rozjechałyby się z serwerem
           attempt++;
-          self.setOnline(false, true, e && e.auth);
+          if (e && e.auth) { self.stopForAuth(e); return; } // hasło — tylko odświeżenie strony
+          self.setOnline(false, true);
           setTimeout(tryLoad, Math.min(10000, 1000 * Math.pow(2, Math.min(attempt, 4))));
         });
       })();
@@ -748,7 +755,7 @@
     clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
     if (this.es) { this.es.onerror = null; this.es.close(); this.es = null; }
     this.anchored = false; this.helloRev = null;
-    if (this.paused) return;
+    if (this.paused || this.authStop) return;
     if (typeof EventSource !== 'function') { warn('Brak EventSource — zmiany z innych urządzeń pojawią się po odświeżeniu.'); this.setOnline(true); return; }
     var es = this.es = new EventSource(API + 'events');
     this.lastSeen = Date.now();
@@ -798,7 +805,7 @@
   ServerBackend.prototype.scheduleReconnect = function () {
     var self = this;
     clearTimeout(this.reconnectTimer);
-    if (this.paused) return;
+    if (this.paused || this.authStop) return;
     this.retry++;
     this.reconnectTimer = setTimeout(function () { self.reconnectTimer = null; self.connect(); }, Math.min(10000, 500 * Math.pow(2, Math.min(this.retry, 5))));
   };
@@ -818,7 +825,7 @@
       return undefined;
     }, function (e) {
       self.buffer = null; self.resyncP = null;
-      self.setOnline(false, false, e && e.auth);
+      if (e && e.auth) self.stopForAuth(e); else self.setOnline(false, false);
       if (self.es) { self.es.onerror = null; self.es.close(); self.es = null; }
       self.anchored = false;
       self.scheduleReconnect();
@@ -889,7 +896,7 @@
       // brak „ping” i zdarzeń dłużej niż ~35 s: połączenie zawieszone — nowe połączenie (i w razie luki wczytanie)
       if (stale()) { warn('brak sygnału z serwera od ' + Math.round((Date.now() - self.lastSeen) / 1000) + ' s — łączę ponownie'); self.connect(); }
     }, Math.max(250, Math.min(5000, Math.floor(SSE_SILENCE_MS / 4))));
-    var kick = function () { if ((!self.online || stale()) && !self.paused) { self.retry = 0; self.connect(); } };
+    var kick = function () { if ((!self.online || stale()) && !self.paused && !self.authStop) { self.retry = 0; self.connect(); } };
     window.addEventListener('online', kick);
     window.addEventListener('pageshow', function (e) { if (e.persisted) { self.everConnected = true; self.paused = false; self.connect(); } });
     document.addEventListener('visibilitychange', function () {
@@ -900,16 +907,33 @@
       else kick();
     });
   };
-  ServerBackend.prototype.setOnline = function (on, immediate, auth) {
+  ServerBackend.prototype.setOnline = function (on, immediate) {
     var self = this;
     this.online = on;
     if (window.EP_LOCAL) window.EP_LOCAL.online = on;
     clearTimeout(this.offlineTimer);
-    if (on) { hideBanner('offline'); return; }
-    var text = auth ? 'Serwer wymaga hasła — odśwież stronę, aby się zalogować. Zmiany nie są zapisywane'
-      : 'Brak połączenia z serwerem — zmiany nie są zapisywane';
-    var show = function () { if (!self.online) showBanner('offline', text); };
+    if (on) { hideBanner('offline'); hideBanner('auth'); return; }
+    if (this.authStop) return; // pasek „hasło” już jest
+    var text = 'Brak połączenia z serwerem — zmiany nie są zapisywane';
+    var show = function () { if (!self.online && !self.authStop) showBanner('offline', text); };
     if (immediate) show(); else this.offlineTimer = setTimeout(show, 1000); // bez migania przy krótkiej przerwie
+  };
+  // Serwer odrzucił hasło (401 — np. zmienione na serwerze) albo wstrzymał logowanie (429). Żadnych prób w tle:
+  // przeglądarka wysyłałaby przy każdej zapamiętane stare hasło. Wznawia dopiero odświeżenie strony
+  // (przeglądarka zapyta wtedy o hasło) albo udane żądanie wykonane na prośbę użytkownika.
+  ServerBackend.prototype.stopForAuth = function (e) {
+    this.authStop = e || true;
+    clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
+    if (this.es) { this.es.onerror = null; this.es.close(); this.es = null; }
+    this.anchored = false; this.helloRev = null;
+    this.online = false;
+    if (window.EP_LOCAL) window.EP_LOCAL.online = false;
+    clearTimeout(this.offlineTimer);
+    hideBanner('offline');
+    var text = e && e.lock
+      ? e.message + ' Zmiany nie są zapisywane. Odśwież stronę i wpisz poprawne hasło.'
+      : 'Serwer wymaga hasła (mogło zostać zmienione) — zmiany nie są zapisywane. Odśwież stronę i zaloguj się.';
+    showBanner('auth', text, { button: 'Odśwież stronę', onClose: function () { window.location.reload(); } });
   };
   // każde żądanie do serwera: sukces = serwer jest osiągalny (pasek znika), brak odpowiedzi = pasek
   ServerBackend.prototype.request = function (url, opts, timeoutMs) {
@@ -917,6 +941,7 @@
     return fetchJson(url, opts, timeoutMs).then(function (r) { self.noteOk(); return r; }, function (e) { self.onRequestError(e); throw e; });
   };
   ServerBackend.prototype.noteOk = function () {
+    if (this.authStop) this.authStop = null; // serwer znów przyjmuje żądania (np. zalogowano się w innej karcie)
     if (!this.online) this.setOnline(true);
     // serwer odpowiada, a połączenie na żywo leży — połącz od razu, nie czekając na kolejną próbę
     if (this.started && !this.paused && (!this.es || this.es.readyState === 2)) this.connect();
@@ -924,14 +949,15 @@
   // błąd strumienia SSE: czy serwer w ogóle odpowiada? (jedno sprawdzenie naraz)
   ServerBackend.prototype.probe = function () {
     var self = this;
-    if (this.probing) return;
+    if (this.probing || this.authStop) return;
     this.probing = true;
     fetchJson(API + 'rev', {}, 5000).then(function () {
       self.probing = false;
       self.setOnline(true);
     }, function (e) {
       self.probing = false;
-      if (e && (e.network || e.auth)) self.setOnline(false, !!e.auth, e.auth);
+      if (e && e.auth) self.stopForAuth(e);
+      else if (e && e.network) self.setOnline(false, false);
       else self.setOnline(true); // serwer odpowiedział (np. inną wersją) — jest osiągalny
     });
   };
@@ -941,7 +967,8 @@
   // tylko brak odpowiedzi (albo żądanie hasła) oznacza utratę połączenia — błąd zapisu na dysku serwera nie
   ServerBackend.prototype.onRequestError = function (e) {
     if (!e || !(e.network || e.auth)) return;
-    this.setOnline(false, true, e.auth);
+    if (e.auth) { this.stopForAuth(e); return; }
+    this.setOnline(false, true);
     if (this.started && !this.paused && (!this.es || this.es.readyState === 2) && !this.reconnectTimer) this.scheduleReconnect();
   };
   ServerBackend.prototype.applyResult = function (r) {

@@ -25,6 +25,11 @@ if not exist "index.html" node narzedzia\zbuduj.js
 if not exist "index.html" goto koniec_blad
 
 if not defined PORT set "PORT=8080"
+rem Ustawienia dodatkowe (opcjonalne): usun "rem " z poczatku linii i wpisz swoja wartosc.
+rem Haslo dostepu (przegladarka zapyta o nie; znak %% w hasle wpisz podwojnie):
+rem set "EP_HASLO=twoje haslo"
+rem Wlasna domena, np. za odwrotnym serwerem proxy (kilka nazw po przecinku):
+rem set "EP_HOSTY=palety.example.pl"
 node server.js --otworz
 if errorlevel 1 goto koniec_blad
 goto :eof

@@ -572,7 +572,7 @@ let prefillType = null, prefillDate = null; // "zapisz i dodaj kolejną" / quick
 let historyLimit = 100;                      // history renders in pages of 100 rows
 let bulkWriting = false;                     // import in progress: skip per-write re-renders
 let lastSubmitAction = 'save';               // which submit button of the operation form was used
-const APP_VERSION = '2.0 · 2026-10-03';
+const APP_VERSION = '2.1 · 2026-10-05';
 const ONLINE_DOC_LIMIT = 5000;               // claude.ai artifact database capacity (documents)
 let editingId = null;      // id of the operation open in the edit form (survives data re-renders)
 
@@ -639,7 +639,8 @@ function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&'
 function courierById(id){ return couriers.find(c=>c.id===id); }
 function isEnabled(c){ return c.enabled !== false; }
 function slugify(name){
-  return name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'kurier';
+  // ł/Ł have no decomposed form — without this they would simply vanish ("Łódź" → "odz")
+  return name.replace(/ł/g,'l').replace(/Ł/g,'L').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'kurier';
 }
 function weekStart(dateStr){ const dt = new Date(dateStr+'T00:00:00'); const day = (dt.getDay()+6)%7; dt.setDate(dt.getDate()-day); return dt; }
 function addDays(dateStr,n){ const d=new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n); return toKey(d); }
@@ -1471,7 +1472,9 @@ function viewHistory(){
         </tbody>
       </table>
     </div>
-    ${rows.length>shown.length? `<div style="display:flex; justify-content:center; margin-top:14px;"><button type="button" class="btn" data-action="history-more">Pokaż kolejne ${num(Math.min(100, rows.length-shown.length))} (pozostało ${num(rows.length-shown.length)})</button></div>` : ''}` : `<div class="empty">${ICONS.search}<h3>Brak wyników</h3><p>Zmień filtry albo zarejestruj nową operację.</p></div>`}
+    ${rows.length>shown.length? `<div style="display:flex; justify-content:center; margin-top:14px;"><button type="button" class="btn" data-action="history-more">Pokaż kolejne ${num(Math.min(100, rows.length-shown.length))} (pozostało ${num(rows.length-shown.length)})</button></div>` : ''}` : (historyFilters.from && historyFilters.to && historyFilters.from > historyFilters.to)
+      ? `<div class="empty" role="alert">${ICONS.search}<h3>Nieprawidłowy zakres dat</h3><p>Data „od” (${fmtDate(historyFilters.from)}) jest późniejsza niż „do” (${fmtDate(historyFilters.to)}) — popraw jedną z dat.</p></div>`
+      : `<div class="empty">${ICONS.search}<h3>Brak wyników</h3><p>Zmień filtry albo zarejestruj nową operację.</p></div>`}
   `;
 }
 
@@ -1543,18 +1546,38 @@ function svgLineChart(labels, series, color, opts={}){
     ${xLabels}
   </svg>`;
 }
+// width of a chart label in SVG user units (13px Space Grotesk, semibold); estimated when canvas is unavailable
+let labelCanvas = null;
+function labelWidth(text){
+  try{
+    labelCanvas = labelCanvas || document.createElement('canvas').getContext('2d');
+    labelCanvas.font = '600 13px "Space Grotesk", system-ui, sans-serif';
+    return labelCanvas.measureText(text).width;
+  }catch(e){ return Array.from(text).length*8; }
+}
+function fitLabel(text, avail){
+  const chars = Array.from(String(text));
+  if(labelWidth(chars.join('')) <= avail) return chars.join('');
+  let n = chars.length;
+  while(n>1 && labelWidth(chars.slice(0,n).join('').trimEnd()+'…') > avail) n--;
+  return chars.slice(0,n).join('').trimEnd()+'…';
+}
 function svgHBar(items, opts={}){
-  const w = opts.width||chartWidth(), rowH=32, padL=Math.round(Math.min(118, Math.max(76, w*0.32))), padR=Math.round(Math.min(58, Math.max(38, w*0.13))), padT=6;
+  // in the two-column statistics layout the panel is less than half the content width
+  const w = opts.width || (window.innerWidth > 980 ? 460 : chartWidth()), rowH=32, padR=Math.round(Math.min(58, Math.max(38, w*0.13))), padT=6;
+  const longest = Math.max(0, ...items.map(it=>labelWidth(String(it.label))));
+  const padL = Math.round(Math.min(w*0.42, Math.max(76, longest + 18)));
   const h = padT*2 + rowH*items.length;
   const max = Math.max(1, ...items.map(i=>i.value));
   let rows = '';
   items.forEach((it,i)=>{
     const y = padT + i*rowH; const barW = ((w-padL-padR) * it.value/max);
-    const label = it.label.length>12 && w<420 ? it.label.slice(0,11)+'…' : it.label;
+    const label = fitLabel(it.label, padL-14);
     rows += `
+      <g><title>${escapeHtml(it.label)}: ${num(it.value)}</title>
       <text x="${padL-9}" y="${y+rowH/2+4.5}" font-size="13" font-weight="600" text-anchor="end" fill="var(--text)" font-family="Space Grotesk, sans-serif">${escapeHtml(label)}</text>
       <rect x="${padL}" y="${y+6}" width="${Math.max(2,barW)}" height="${rowH-12}" rx="4" fill="${it.color||'var(--accent)'}"/>
-      <text x="${padL+barW+8}" y="${y+rowH/2+4.5}" font-size="12.5" font-weight="600" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${num(it.value)}</text>
+      <text x="${padL+barW+8}" y="${y+rowH/2+4.5}" font-size="12.5" font-weight="600" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${num(it.value)}</text></g>
     `;
   });
   return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img">${rows}</svg>`;
@@ -1946,6 +1969,7 @@ function viewCourierDetail(id){
   const balSeries = balMonthKeys.map(mk=> openingW - openingZ + allTx.filter(t=>monthKey(t.data)<=mk).reduce((s,t)=> s + (t.typ==='wydanie'? t.ilosc : -t.ilosc), 0));
 
   const st = courierStatement(id, stFrom, stTo);
+  const stBad = !!(stFrom && stTo && stFrom > stTo);   // "od" after "do": shown as an error, nothing printed
   const stDocket = buildDocketMap();
   const stPresets = datePresets().filter(p=>p.key!=='today');
 
@@ -2011,16 +2035,16 @@ function viewCourierDetail(id){
       <div class="panel-title">
         <h2>Rozliczenie z kurierem</h2>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button type="button" class="btn btn-sm" data-action="st-print">${ICONS.printer}Drukuj / PDF</button>
-          <button type="button" class="btn btn-sm" data-action="st-csv">${ICONS.download}CSV</button>
+          <button type="button" class="btn btn-sm" data-action="st-print" ${stBad?'disabled':''}>${ICONS.printer}Drukuj / PDF</button>
+          <button type="button" class="btn btn-sm" data-action="st-csv" ${stBad?'disabled':''}>${ICONS.download}CSV</button>
         </div>
       </div>
       <div class="chips" style="margin-bottom:10px;">${stPresets.map(pr=>`<button type="button" class="chip-btn ${stFrom===pr.from && stTo===pr.to?'active':''}" data-st-preset="${pr.key}">${pr.label}</button>`).join('')}</div>
       <div class="filters" style="margin-bottom:12px;">
-        <div class="field"><label for="stFrom">Od</label><input type="date" id="stFrom" value="${stFrom}" max="${todayStr()}"></div>
-        <div class="field"><label for="stTo">Do</label><input type="date" id="stTo" value="${stTo}" max="${todayStr()}"></div>
+        <div class="field"><label for="stFrom">Od</label><input type="date" id="stFrom" value="${stFrom}" max="${todayStr()}" ${stBad?'aria-invalid="true" aria-describedby="stRangeErr"':''}></div>
+        <div class="field"><label for="stTo">Do</label><input type="date" id="stTo" value="${stTo}" max="${todayStr()}" ${stBad?'aria-invalid="true" aria-describedby="stRangeErr"':''}></div>
       </div>
-      <div class="grid kpi-grid" style="margin-bottom:12px;">
+      ${stBad ? `<div class="empty" id="stRangeErr" role="alert" style="padding:18px;"><p><b>Data „od” (${fmtDate(stFrom)}) jest późniejsza niż „do” (${fmtDate(stTo)}).</b> Popraw jedną z dat — rozliczenie, wydruk i CSV pojawią się dla poprawnego okresu.</p></div>` : `<div class="grid kpi-grid" style="margin-bottom:12px;">
         <div class="kpi"><div class="lbl">${stFrom? 'Saldo na '+fmtDate(addDays(stFrom,-1)) : 'Stan początkowy'}</div><div class="val" style="font-size:19px;">${num(st.startBal)}</div></div>
         <div class="kpi"><div class="lbl">Wydane</div><div class="val" style="font-size:19px; color:var(--bad);">${num(st.w)}</div></div>
         <div class="kpi"><div class="lbl">Zwrócone</div><div class="val" style="font-size:19px; color:var(--good);">${num(st.z)}</div></div>
@@ -2038,7 +2062,7 @@ function viewCourierDetail(id){
             <td data-label=""><div class="row-actions"><button class="icon-btn accent" data-action="print-op" data-id="${r.t.id}" title="Drukuj dokument" aria-label="Drukuj dokument">${ICONS.printer}</button><button class="icon-btn accent" data-action="edit" data-id="${r.t.id}" title="Edytuj" aria-label="Edytuj operację">${ICONS.edit}</button></div></td>
           </tr>`).join('')}</tbody>
         </table>
-      </div>` : `<div class="empty" style="padding:18px;"><p>Brak operacji w wybranym okresie.</p></div>`}
+      </div>` : `<div class="empty" style="padding:18px;"><p>Brak operacji w wybranym okresie.</p></div>`}`}
     </div>
 
     <div class="panel">
@@ -2154,9 +2178,10 @@ function dataIssues(){
   Object.values(groups).forEach(g=>{
     for(let i=1;i<g.length;i++){
       const a=g[i-1], b=g[i];
-      if(a.createdAt && b.createdAt && b.createdAt-a.createdAt < 15*60000){
+      // twinOk: the user confirmed the repeat ("Zapisz ponownie") or marked it "To nie duplikat"
+      if(a.createdAt && b.createdAt && b.createdAt-a.createdAt < 15*60000 && !b.twinOk){
         issues.push({level:'warn', text:`Możliwy podwójny wpis: <b>${escapeHtml(map[a.id]||'')}</b> i <b>${escapeHtml(map[b.id]||'')}</b> — ${escapeHtml(txCourierName(b))}, ${b.typ==='wydanie'?'wydanie':'zwrot'}, ${palet(b.ilosc)}, ${fmtDate(b.data)}, zapisane w odstępie ${Math.max(1,Math.round((b.createdAt-a.createdAt)/60000))} min.`,
-          actions:[{label:'Pokaż', act:'edit', id:b.id},{label:'Usuń drugi wpis', act:'delete', id:b.id}]});
+          actions:[{label:'Pokaż', act:'edit', id:b.id},{label:'To nie duplikat', act:'twin-ok', id:b.id},{label:'Usuń drugi wpis', act:'delete', id:b.id}]});
       }
     }
   });
@@ -2274,6 +2299,8 @@ function parseBackup(text){
     if(!(t && typeof t.id==='string' && ID.test(t.id) && (t.typ==='wydanie'||t.typ==='zwrot') && Number.isInteger(t.ilosc) && t.ilosc>0 && typeof t.data==='string' && /^\d{4}-\d{2}-\d{2}$/.test(t.data) && typeof t.kurierId==='string' && ID.test(t.kurierId))){ out.skipped++; return; }
     const d = {kurierId:t.kurierId, kurierNazwa:String(t.kurierNazwa||'').slice(0,60), typ:t.typ, ilosc:t.ilosc, data:t.data, uwagi:String(t.uwagi||'').slice(0,500), createdAt: Number.isFinite(t.createdAt)? t.createdAt : (Date.parse(t.data)||0)};
     if(typeof t.nr==='string' && /^(WZ|PZ)-\d+$/.test(t.nr)) d.nr = t.nr;
+    if(d.nr && Number.isFinite(t.nrAt)) d.nrAt = t.nrAt;
+    if(t.twinOk===true) d.twinOk = true;
     if(t.numerListu) d.numerListu = String(t.numerListu).slice(0,100);
     out.transactions.push({id:t.id, data:d});
   });
@@ -2380,6 +2407,30 @@ async function runImport(parsed, mode){
   importRunning = true; bulkWriting = true;
   openModal(`<h2>Wczytywanie kopii…</h2><div class="modal-sub" id="importProgress">Przygotowanie…</div><div class="meter"><span id="importBar" style="width:0%"></span></div>`);
   modalCancelHook = ()=>{}; // can't be dismissed while writing
+  // Document numbers first, in one locked step: the counter is read once and moved once — never below
+  // the stored one, the file's, or any number already in use here or in the file — and operations from
+  // the file whose number is taken here get the next numbers, saved together with them below.
+  const newNr = new Map();
+  try{
+    await withNumberingLock(async ()=>{
+      const cur = await readCounters();
+      const top = {
+        wydanie: Math.max(cur.data.wz||0, (counters&&counters.wz)||0, Number(parsed.counters.wz)||0),
+        zwrot: Math.max(cur.data.pz||0, (counters&&counters.pz)||0, Number(parsed.counters.pz)||0),
+      };
+      const bump = (typ, n)=>{ if(n > (top[typ]||0)) top[typ] = n; };
+      parsed.transactions.forEach(t=>{ if(!renumberSet.has(t.id) && hasValidNr(t.data)) bump(t.data.typ, docketNum(t.data.nr)); });
+      if(mode==='merge'){ const map = buildDocketMap(); transactions.forEach(t=> bump(t.typ, docketNum(map[t.id]))); }
+      parsed.transactions.filter(t=>renumberSet.has(t.id)).sort((a,b)=>(a.data.createdAt||0)-(b.data.createdAt||0))
+        .forEach(t=>{ top[t.data.typ] += 1; newNr.set(t.id, padNr(t.data.typ, top[t.data.typ])); });
+      const target = {wz: top.wydanie, pz: top.zwrot};
+      if(!cur.exists || cur.data.wz!==target.wz || cur.data.pz!==target.pz) await writeCounters(cur, target);
+    });
+  }catch(e){
+    console.error(e); importRunning = false; bulkWriting = false; closeModal();
+    toast(e && e.code==='busy' ? 'Numeracja dokumentów jest zajęta na innym urządzeniu — nic nie zapisano, spróbuj ponownie.' : 'Nie udało się przygotować numerów dokumentów — nic nie zapisano. Spróbuj ponownie.', true);
+    return;
+  }
   const logoMap = {};
   for(const c of addC){
     const lid = c.data.logoAssetId; const du = lid && parsed.logos[lid];
@@ -2399,8 +2450,9 @@ async function runImport(parsed, mode){
     }
     if(Object.keys(patch).length) writes.push({op:'update', coll:'couriers', id:f.id, data:patch});
   }
-  // a number already used here by another operation is dropped now and a new one is given below
-  addT.forEach(t=>{ const d = {...t.data}; if(renumberSet.has(t.id)){ delete d.nr; delete d.nrAt; } writes.push({op:'set', coll:'transactions', id:t.id, data:d}); });
+  // a number already used here by another operation is replaced by the one reserved above
+  const nrAt = Date.now();
+  addT.forEach(t=>{ const d = {...t.data}; if(newNr.has(t.id)){ d.nr = newNr.get(t.id); d.nrAt = nrAt; } writes.push({op:'set', coll:'transactions', id:t.id, data:d}); });
   let done = 0, failed = 0; const queue = writes.slice();
   const progress = ()=>{ const el = document.getElementById('importProgress'), bar = document.getElementById('importBar'); if(el) el.textContent = `Zapisano ${num(done)} z ${num(writes.length)}…`; if(bar) bar.style.width = (writes.length ? done/writes.length*100 : 100).toFixed(1)+'%'; };
   const worker = async ()=>{
@@ -2425,34 +2477,24 @@ async function runImport(parsed, mode){
   } else {
     await Promise.all(Array.from({length: Math.min(6, Math.max(1, writes.length))}, worker));
   }
-  // document counters never go backwards
-  const maxOf = (prefix)=> Math.max(0, ...parsed.transactions.filter(t=>(t.data.nr||'').startsWith(prefix)).map(t=>docketNum(t.data.nr)));
-  const newCounters = {
-    wz: Math.max((counters&&counters.wz)||0, Number(parsed.counters.wz)||0, maxOf('WZ')),
-    pz: Math.max((counters&&counters.pz)||0, Number(parsed.counters.pz)||0, maxOf('PZ')),
-  };
   try{
-    await withNumberingLock(async ()=>{
-      const cur = await readCounters();
-      const target = {wz: Math.max(newCounters.wz, cur.data.wz||0), pz: Math.max(newCounters.pz, cur.data.pz||0)};
-      if(!cur.exists || cur.data.wz!==target.wz || cur.data.pz!==target.pz) await writeCounters(cur, target);
-    });
     if(!(settings && settings.seeded)){ await db.doc('meta/settings').set({...(settings||{}), seeded:true}); }
   }catch(e){ failed++; console.error(e); }
-  // new numbers for imported operations whose number was taken here (still inside the import, so the
-  // automatic numbering of un-numbered operations can't run in between)
-  let renumbered = 0;
-  for(const id of plan.renumber){
-    const t = parsed.transactions.find(x=>x.id===id); if(!t) continue;
-    try{ const nr = await allocDocket(t.data.typ); await db.collection('transactions').doc(id).update({nr, nrAt: Date.now()}); renumbered++; }
-    catch(e){ failed++; console.error('renumber', id, e); }
-  }
+  const renumbered = newNr.size;
   couriersSeeded = true; importRunning = false; bulkWriting = false; docketMigrationDone = false;
   // imported operations older than the live window are not delivered by the subscription — reload that part
   olderTx.clear(); olderBoundary = null;
   if(liveTx.length >= TX_WINDOW){ olderBoundary = liveTx[liveTx.length-1].data; historyComplete = false; await loadOlderTransactions(olderBoundary); }
   else historyComplete = true;
-  closeModal(); mergeTransactions(); render(); migrateDockets();
+  // the live update of the imported data can restart that load (new boundary) — wait for it, so the
+  // totals are already complete when the import reports success
+  for(let i=0; i<150 && !historyComplete; i++) await new Promise(r=>setTimeout(r, 100));
+  closeModal(); mergeTransactions(); render();
+  // numbers for operations saved without one (old copies) are given from a local copy that already
+  // holds every imported operation — otherwise the next live update does it (a stale copy could hand
+  // out a number an imported operation already has)
+  { const have = new Set(transactions.map(t=>t.id)); const gone = writes.filter(w=>w.op==='delete' && w.coll==='transactions').map(w=>w.id);
+    if(addT.every(t=>have.has(t.id)) && !gone.some(id=>have.has(id))) migrateDockets(); }
   if(failed) toast(`Wczytano z błędami: nie zapisano ${num(failed)} z ${num(writes.length)} wpisów. Spróbuj ponownie (tryb „Połącz” uzupełni braki).`, true);
   else toast(`Wczytano kopię: kurierzy ${num(addC.length)}, ${opsLabel(addT.length)}${mode==='replace' && writes.some(w=>w.op==='delete') ? `, usunięto ${num(writes.filter(w=>w.op==='delete').length)}` : ''}${plan.fills.length ? `, uzupełniono dane kurierów: ${num(plan.fills.length)}` : ''}${renumbered ? `, nowe numery dokumentów: ${num(renumbered)}` : ''}${plan.differ.length ? `; tutejsze ustawienia zachowane u: ${plan.differ.map(d=>d.name).join(', ')}` : ''}.`);
 }
@@ -2481,15 +2523,52 @@ async function handleIssueAction(btn){
     }catch(e){ console.error(e); toast('Nie udało się nadać numerów', true); btn.disabled = false; }
   }
   else if(act==='restore-courier'){
-    try{
-      const order = (couriers.length? Math.max(...couriers.map(c=>c.order||0)) : 0) + 1;
-      await db.collection('couriers').doc(id).set({name:(btn.dataset.name||id).slice(0,60), order, color:COURIER_COLORS[couriers.length % COURIER_COLORS.length], custom:true, enabled:true});
-      toast(`Przywrócono kuriera „${btn.dataset.name||id}”`);
-    }catch(e){ console.error(e); toast('Nie udało się przywrócić kuriera', true); }
+    const name = String(btn.dataset.name||id).trim().replace(/\s+/g,' ').slice(0,60);
+    // a courier with this name was added again meanwhile: a second one with the same name would split
+    // the history between two identical cards — move the operations to the existing one instead
+    const same = couriers.find(c=>(c.name||'').trim().toLowerCase()===name.toLowerCase());
+    if(same){
+      const ops = transactions.filter(t=>t.kurierId===id);
+      const ok = await confirmDialog('Kurier o tej nazwie już jest', `Na liście jest już kurier „${escapeHtml(same.name)}”. Przenieść do niego ${opsLabel(ops.length)} usuniętego kuriera „${escapeHtml(name)}”? Jego bilans i rozliczenia obejmą wtedy także te operacje.`, {okLabel:'Przenieś operacje', danger:false});
+      if(!ok) return;
+      await moveOperations(ops, same);
+      return;
+    }
+    try{ await restoreCourier(id, name); toast(`Przywrócono kuriera „${name}”`); }
+    catch(e){ console.error(e); toast('Nie udało się przywrócić kuriera', true); }
   }
+  else if(act==='twin-ok'){
+    btn.disabled = true;
+    try{
+      await db.collection('transactions').doc(id).update({twinOk:true});
+      const t = transactions.find(x=>x.id===id); if(t) applyLocalTx(id, {...t, twinOk:true});
+      render(); noteLocalWrite();
+      toast('Oznaczono jako osobną operację');
+    }catch(e){ console.error(e); toast('Nie udało się zapisać zmiany', true); btn.disabled = false; }
+  }
+}
+// courier record for an id that still has operations (a deleted courier brought back with its history)
+async function restoreCourier(id, name, color){
+  const order = (couriers.length? Math.max(...couriers.map(c=>c.order||0)) : 0) + 1;
+  await db.collection('couriers').doc(id).set({name:String(name).slice(0,60), order, color: color || COURIER_COLORS[couriers.length % COURIER_COLORS.length], custom:true, enabled:true});
+}
+// operations of a deleted courier moved to an existing one
+async function moveOperations(ops, target){
+  let moved = 0, failed = 0;
+  for(const t of ops){
+    try{
+      await db.collection('transactions').doc(t.id).update({kurierId:target.id, kurierNazwa:target.name});
+      applyLocalTx(t.id, {...t, kurierId:target.id, kurierNazwa:target.name});
+      moved++;
+    }catch(e){ failed++; console.error('move', t.id, e); }
+  }
+  mergeTransactions(); render(); noteLocalWrite();
+  if(failed) toast(`Przeniesiono ${opsLabel(moved)}, nie udało się przenieść ${num(failed)} — spróbuj ponownie.`, true);
+  else toast(`Przeniesiono ${opsLabel(moved)} do kuriera „${target.name}”`);
 }
 
 function exportStatementCsv(id){
+  if(stFrom && stTo && stFrom > stTo){ toast('Popraw okres — data „od” jest późniejsza niż „do”', true); return; }
   const c = courierById(id) || {name:(transactions.find(t=>t.kurierId===id)||{}).kurierNazwa || id};
   const st = courierStatement(id, stFrom, stTo); const map = buildDocketMap();
   const L = [];
@@ -2785,6 +2864,18 @@ async function createCourier(name, color){
   name = String(name).trim().replace(/\s+/g,' ').slice(0,60);
   const same = couriers.find(c=>(c.name||'').trim().toLowerCase()===name.toLowerCase());
   if(same){ toast(`Kurier „${same.name}” już jest na liście`, true); return; }
+  const orphan = {};
+  transactions.forEach(t=>{ if(!courierById(t.kurierId) && (t.kurierNazwa||'').trim().toLowerCase()===name.toLowerCase()){ const o = orphan[t.kurierId] = orphan[t.kurierId] || {n:0, bal:0}; o.n++; o.bal += t.typ==='wydanie' ? t.ilosc : -t.ilosc; } });
+  const prevId = Object.keys(orphan).sort((a,b)=>orphan[b].n-orphan[a].n)[0];
+  if(prevId){
+    const o = orphan[prevId];
+    const back = await confirmDialog('Ten kurier był już w ewidencji', `Kurier „${escapeHtml(name)}” został wcześniej usunięty, a w historii zostało ${opsLabel(o.n)} (bilans ${o.bal>0?'+':''}${num(o.bal)}). Przywrócić go razem z tą historią? „Dodaj nowego” utworzy osobnego kuriera bez tych operacji.`, {okLabel:'Przywróć z historią', cancelLabel:'Dodaj nowego', danger:false});
+    if(back){
+      try{ await restoreCourier(prevId, name, color); toast(`Przywrócono kuriera „${name}” z historią (${opsLabel(o.n)})`); }
+      catch(e){ console.error(e); toast('Nie udało się przywrócić kuriera', true); }
+      return;
+    }
+  }
   let base = slugify(name), id = base, i = 2;
   while(courierById(id) || transactions.some(t=>t.kurierId===id)) { id = `${base}-${i}`; i++; }
   const order = (couriers.length? Math.max(...couriers.map(c=>c.order||0)) : 0) + 1;
@@ -2870,6 +2961,7 @@ async function saveTransaction(form){
     const ok = await confirmDialog('Duża ilość palet', `Czy na pewno <b>${palet(ilosc)}</b> w jednej operacji? Sprawdź, czy nie ma literówki.`, {okLabel:'Tak, zapisz', danger:false});
     if(!ok) return false;
   }
+  let twinOk = false;
   if(!orig){
     const twin = transactions.filter(t=> t.kurierId===kurierId && t.typ===typ && t.ilosc===ilosc && t.data===data && t.createdAt && Date.now()-t.createdAt < 15*60000)
       .sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))[0];
@@ -2878,6 +2970,7 @@ async function saveTransaction(form){
       const mins = Math.max(1, Math.round((Date.now()-twin.createdAt)/60000));
       const ok = await confirmDialog('Taka operacja już jest', `Identyczną operację (${escapeHtml(kurierNazwa)}, ${typ==='wydanie'?'wydanie':'zwrot'}, ${palet(ilosc)}, ${fmtDate(data)}) zapisano ${mins} min temu jako <b>${escapeHtml(nr)}</b>. Zapisać ją jeszcze raz?`, {okLabel:'Zapisz ponownie', danger:false});
       if(!ok) return false;
+      twinOk = true;   // a deliberate repeat — not reported later as a possible double entry
     }
   }
 
@@ -2887,6 +2980,7 @@ async function saveTransaction(form){
     if(!courierById(newCourier.id)) couriers = [...couriers, {id:newCourier.id, ...newCourier.data}];
   }
   const payload = {kurierId, kurierNazwa, typ, ilosc, data, uwagi};
+  if(twinOk) payload.twinOk = true;
   // an operation dated on/before the oldest day of the live window is not delivered by the live
   // subscription — keep our own copy in olderTx so it counts immediately
   const keepOlder = (id, doc)=>{
@@ -2959,26 +3053,66 @@ function exportCsv(){
 // A date typed from the keyboard passes through values like 0002-09-15 while the year is entered;
 // applying (and re-rendering) on each of them would move the caret and garble the date. Apply only a
 // complete, plausible date (or an emptied field) — immediately, or when the field loses focus.
+// apply(v) only stores the new value; the view is re-rendered here.
+let pointerHeld = false;   // a mouse/touch press is in progress (seen in the capture phase, before the field's blur)
+document.addEventListener('pointerdown', ()=>{ pointerHeld = true; }, true);
+['pointerup','pointercancel'].forEach(ev=> document.addEventListener(ev, ()=>{ pointerHeld = false; }, true));
+// run fn once the press in progress has ended and its click was handled — re-rendering between
+// mousedown and mouseup would replace the button being clicked, and the click would be lost
+function afterPointer(fn){
+  if(!pointerHeld){ setTimeout(fn, 0); return; }
+  let done = false;
+  const go = ()=>{ if(done) return; done = true; document.removeEventListener('pointerup', go, true); document.removeEventListener('pointercancel', go, true); setTimeout(fn, 0); };
+  document.addEventListener('pointerup', go, true); document.addEventListener('pointercancel', go, true);
+  setTimeout(go, 4000);
+}
 function bindDateInput(input, apply){
   if(!input) return;
   let last = input.value, typed = false;
   const ok = (v)=> v==='' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && v>='2000-01-01' && v<='2099-12-31');
-  const go = ()=>{
-    if(!input.isConnected) return;
-    if(input.validity && input.validity.badInput) return;   // a segment is half-typed: not a real value yet
+  // store a complete new value; true when something changed
+  const commit = ()=>{
+    if(!input.isConnected) return false;
+    if(input.validity && input.validity.badInput) return false;   // a segment is half-typed: not a real value yet
     const v = input.value; typed = false;
-    if(v===last || !ok(v)) return;
-    last = v;
-    setTimeout(()=>apply(v), 0);                             // never re-render from inside an input event
+    if(v===last || !ok(v)) return false;
+    last = v; apply(v);
+    return true;
+  };
+  const rerender = ()=>{
+    if(!input.isConnected){ pendingDataRender = false; return; }   // the view was rebuilt meanwhile (e.g. by the clicked button)
+    pendingDataRender = false; render();
   };
   // typing applies on Enter / leaving the field; the calendar picker or the clear button apply at once
-  input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); go(); } else if(e.key!=='Tab' && e.key!=='Shift') typed = true; });
-  input.addEventListener('change', ()=>{ if(!typed) go(); });
+  input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); if(commit() || pendingDataRender) setTimeout(rerender, 0); } else if(e.key!=='Tab' && e.key!=='Shift') typed = true; });
+  input.addEventListener('change', ()=>{ if(!typed && commit()) setTimeout(rerender, 0); });   // never re-render from inside an input event
   input.addEventListener('blur', ()=>{
-    go();
-    if(pendingDataRender){ pendingDataRender = false; setTimeout(()=>{ if(!(document.activeElement && document.activeElement.matches && document.activeElement.matches('input[type=date]'))) render(true); }, 0); }
+    const changed = commit();
+    if(!changed && !pendingDataRender) return;
+    afterPointer(()=>{
+      const ae = document.activeElement;
+      // only a data refresh is waiting and focus went on to another date field: that field's blur does it
+      if(!changed && ae && ae!==input && ae.matches && ae.matches('input[type=date]') && input.isConnected){ pendingDataRender = true; return; }
+      rerender();
+    });
   });
 }
+// The calendar day can change while the page stays open (a shared warehouse PC left on overnight):
+// the "not after today" limits move on, and an untouched default date in the operation form follows.
+let shownDay = todayStr();
+function checkDayChange(){
+  const now = todayStr(); if(now===shownDay) return;
+  const prev = shownDay; shownDay = now;
+  document.querySelectorAll('input[type=date]').forEach(el=>{ if(el.max && el.max < now) el.max = now; });
+  const d = document.getElementById('opData');
+  if(d && !editingId && !d.dataset.touched && d.value && d.value===prev){ d.value = now; toast(`Zmienił się dzień — data operacji ustawiona na dziś (${fmtDate(now)}).`); }
+  if(db) afterPointer(()=>render(true));   // "today" figures and limits; never between mousedown and mouseup
+}
+setInterval(checkDayChange, 30000);
+document.addEventListener('visibilitychange', checkDayChange);
+window.addEventListener('focus', checkDayChange);
+document.addEventListener('focusin', checkDayChange, true);
+document.addEventListener('pointerdown', checkDayChange, true);
 function bindViewEvents(){
   const main = document.getElementById('main');
 
@@ -2989,6 +3123,8 @@ function bindViewEvents(){
 
   const opForm = document.getElementById('opForm');
   if(opForm){
+    const dIn = document.getElementById('opData');
+    if(dIn) ['input','change'].forEach(ev=> dIn.addEventListener(ev, ()=>{ dIn.dataset.touched = '1'; }));
     const sel = document.getElementById('kurierSelect');
     const newField = document.getElementById('newCourierField');
     const syncNewField = ()=>{ newField.style.display = sel.value==='__new__' ? 'block':'none'; };
@@ -3039,8 +3175,8 @@ function bindViewEvents(){
     fltQ.addEventListener('input', ()=>{ historyFilters.q = fltQ.value; historyLimit = 100; clearTimeout(t); t = setTimeout(render, 220); });
     document.getElementById('fltKurier').addEventListener('change', (e)=>{ historyFilters.kurier=e.target.value; historyLimit=100; render(); });
     document.getElementById('fltTyp').addEventListener('change', (e)=>{ historyFilters.typ=e.target.value; historyLimit=100; render(); });
-    bindDateInput(document.getElementById('fltFrom'), (v)=>{ historyFilters.from = v; historyLimit = 100; render(); });
-    bindDateInput(document.getElementById('fltTo'), (v)=>{ historyFilters.to = v; historyLimit = 100; render(); });
+    bindDateInput(document.getElementById('fltFrom'), (v)=>{ historyFilters.from = v; historyLimit = 100; });
+    bindDateInput(document.getElementById('fltTo'), (v)=>{ historyFilters.to = v; historyLimit = 100; });
     const clearBtn = main.querySelector('[data-action="clear-filters"]');
     if(clearBtn) clearBtn.addEventListener('click', ()=>{ historyFilters={kurier:'all',typ:'all',from:'',to:'',q:''}; historyLimit=100; render(); });
     main.querySelectorAll('[data-hist-preset]').forEach(b=>b.addEventListener('click', ()=>{
@@ -3080,11 +3216,12 @@ function bindViewEvents(){
   }));
   const stF = document.getElementById('stFrom'), stT = document.getElementById('stTo');
   if(stF && stT){
-    const apply = ()=>{ stFrom = stF.value; stTo = stT.value; if(stFrom && stTo && stFrom>stTo){ const x = stFrom; stFrom = stTo; stTo = x; toast('Zamieniono daty — „od” było późniejsze niż „do”'); } render(); };
-    bindDateInput(stF, apply); bindDateInput(stT, apply);
+    // each field sets only its own date; an inverted range is shown as an error until corrected
+    bindDateInput(stF, (v)=>{ stFrom = v; }); bindDateInput(stT, (v)=>{ stTo = v; });
   }
   const stPrint = main.querySelector('[data-action="st-print"]');
   if(stPrint) stPrint.addEventListener('click', ()=>{
+    if(stFrom && stTo && stFrom > stTo){ toast('Popraw okres — data „od” jest późniejsza niż „do”', true); return; }
     const c = courierById(selectedCourierId) || {name:(transactions.find(t=>t.kurierId===selectedCourierId)||{}).kurierNazwa || selectedCourierId};
     openPrint(`Rozliczenie — ${c.name}`, statementPrintHtml(c, courierStatement(selectedCourierId, stFrom, stTo), stFrom, stTo), `rozliczenie-${slugify(c.name)}-${stFrom||'start'}-${stTo||todayStr()}.html`);
   });

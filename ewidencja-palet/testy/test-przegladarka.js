@@ -1332,3 +1332,116 @@ test('(g9) adres /index.html/ (ukośnik na końcu) prowadzi do działającej apl
     assert.deepEqual(A.bledy, []);
   } finally { await ctx.close(); await srv.zatrzymaj(); }
 });
+
+/* ======================================================================
+   (h) poprawki wersji 2.1 (testy odbiorcze): hasło po zmianie, zakres dat rozliczenia, „Zapisz ponownie”,
+       powrót usuniętego kuriera z historią, „Połącz” z zajętymi numerami
+   ====================================================================== */
+test('(h1) zmiana hasła na serwerze: karta pokazuje pasek z „Odśwież stronę”, nie ponawia prób w tle; nowe hasło działa bez blokady', { timeout: 120000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  let srv = await uruchomSerwer({ dataDir: dane, env: { EP_HASLO: 'stare-haslo', EP_BLOKADA_HASLA_MS: '60000' } });
+  const port = srv.port, url = `http://127.0.0.1:${port}/`;
+  const ctx = await przegladarka.newContext({ httpCredentials: { username: 'biuro', password: 'stare-haslo' } });
+  try {
+    const A = await ctx.newPage();
+    await A.goto(url); await gotowa(A);
+    await srv.zatrzymaj();
+    srv = await uruchomSerwer({ dataDir: dane, port, env: { EP_HASLO: 'nowe-haslo', EP_BLOKADA_HASLA_MS: '60000' } });
+    const baner = await A.waitForSelector('[data-ep-banner="auth"]', { timeout: 30000 });
+    const tekst = await baner.textContent();
+    assert.match(tekst, /Serwer wymaga hasła/);
+    assert.match(tekst, /Odśwież stronę/);
+    assert.equal(await A.$('[data-ep-banner="offline"]'), null, 'jeden pasek — o haśle, nie o braku połączenia');
+    await A.waitForTimeout(500);
+    let zadania = 0;
+    A.on('request', (r) => { if (r.url().startsWith(url)) zadania++; });
+    await A.waitForTimeout(8000);
+    assert.equal(zadania, 0, 'po odrzuconym haśle strona nie ponawia prób w tle');
+    const ctx2 = await przegladarka.newContext({ httpCredentials: { username: 'magazyn', password: 'nowe-haslo' } });
+    try {
+      const B = await ctx2.newPage();
+      const r = await B.goto(url);
+      assert.equal(r.status(), 200, 'nowe hasło działa — stara karta nie zablokowała logowania');
+      await gotowa(B);
+    } finally { await ctx2.close(); }
+    assert.doesNotMatch(srv.wyjscie() + srv.bledy(), /wstrzymane/);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});
+
+test('(h2) rozliczenie: odwrócony zakres dat to błąd (bez zamiany); „Zapisz ponownie” nie wraca w kontroli danych; usunięty kurier wraca z historią', { timeout: 120000 }, async () => {
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'H2');
+    await A.goto(URL_PLIKU); await gotowa(A);
+    assert.deepEqual(await A.evaluate(() => [slugify('Poczta Polska – Łódź'), slugify('Głowacki Transport'), slugify('ŁÓDŹ')]),
+      ['poczta-polska-lodz', 'glowacki-transport', 'lodz']);
+    // ta sama operacja dwa razy, świadomie potwierdzona
+    assert.match(await zapiszOp(A, { kurier: 'dpd', ilosc: 11 }), /WZ-00001/);
+    await wypelnij(A, { kurier: 'dpd', ilosc: 11 });
+    await A.click('#opForm button[type="submit"]');
+    await A.waitForSelector('#confirmBtn');
+    assert.match(await A.textContent('#modalRoot'), /Taka operacja już jest/);
+    await A.click('#confirmBtn');
+    assert.match(await wynikZapisu(A), /WZ-00002/);
+    await doUstawien(A);
+    await A.waitForFunction(() => /Kontrola danych/.test(document.getElementById('main').innerText));
+    assert.doesNotMatch(await A.innerText('#main'), /Możliwy podwójny wpis/, 'potwierdzone „Zapisz ponownie” to nie duplikat');
+    // rozliczenie: „od” późniejsze niż „do” — pokazane jako błąd, daty bez zmian, wydruk i CSV wyłączone
+    await A.evaluate(() => openCourierDetail('dpd'));
+    await A.waitForSelector('#stFrom');
+    const [dzis, wczoraj] = await A.evaluate(() => [todayStr(), addDays(todayStr(), -1)]);
+    await A.fill('#stTo', wczoraj);
+    await A.waitForFunction((w) => stTo === w, wczoraj);
+    await A.fill('#stFrom', dzis);
+    await A.waitForSelector('#stRangeErr');
+    assert.deepEqual(await A.evaluate(() => [stFrom, stTo]), [dzis, wczoraj], 'daty nie są zamieniane');
+    assert.match(await A.textContent('#stRangeErr'), /jest późniejsza niż „do”/);
+    assert.ok(await A.isDisabled('[data-action="st-print"]'));
+    assert.ok(await A.isDisabled('[data-action="st-csv"]'));
+    await A.fill('#stTo', dzis);
+    await A.waitForFunction(() => !document.getElementById('stRangeErr') && document.querySelector('#statementPanel .kpi, .kpi'));
+    assert.ok(!(await A.isDisabled('[data-action="st-csv"]')));
+    // usunięty kurier z operacjami: „Dodaj kuriera” z tą samą nazwą proponuje przywrócenie z historią
+    const nazwa = await A.evaluate(() => courierById('dpd').name);
+    await A.evaluate(() => deleteCourier('dpd'));
+    await A.waitForFunction(() => !courierById('dpd'));
+    await A.evaluate(() => openAddCourierModal());
+    await A.fill('#addCourierName', nazwa.toLowerCase());
+    await A.click('#addCourierForm button[type="submit"]');
+    await A.waitForSelector('#confirmBtn');
+    assert.match(await A.textContent('#modalRoot'), /był już w ewidencji[\s\S]*2 operacje/);
+    await A.click('#confirmBtn');
+    await czekajNaToast(A, /Przywrócono kuriera/);
+    await A.waitForFunction(() => courierById('dpd') && couriers.length === 4);
+    await saldo(A, '22 szt.');
+    assert.deepEqual(A.bledy, []);
+  } finally { await ctx.close(); }
+});
+
+test('(h3) „Połącz” w trybie serwera: operacje z pliku z zajętymi numerami dostają kolejne wolne numery (bez dziur)', { timeout: 120000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const srv = await uruchomSerwer({ dataDir: dane });
+  await zasiej(srv.port);
+  const op = (id, n, createdAt) => ({ kurierId: 'dpd', kurierNazwa: 'DPD', typ: 'wydanie', ilosc: n, data: '2026-10-01', uwagi: '', createdAt, nr: `WZ-0000${n}` });
+  await postJson(srv.port, '/api/batch', { writes: [
+    ...[1, 2, 3, 4, 5].map((n) => ({ op: 'set', coll: 'transactions', id: `loc${n}`, data: op(`loc${n}`, n, 1000 + n) })),
+    { op: 'set', coll: 'meta', id: 'counters', data: { wz: 5, pz: 0 } },
+  ] });
+  const tmp = tymczasowyKatalog('ep-kopia-'); sprzatanie.push(tmp);
+  const plik = path.join(tmp, 'druga-lokalizacja.json');
+  fs.writeFileSync(plik, JSON.stringify({ app: 'ewidencja-palet', format: 1, exportedAt: new Date().toISOString(),
+    couriers: [{ id: 'dpd', name: 'DPD', order: 1, color: '#DC0032', custom: false, enabled: true }],
+    transactions: [1, 2, 3, 4, 5].map((n) => ({ id: `rem${n}`, ...op(`rem${n}`, n, 5000 + n) })), meta: { counters: { wz: 5, pz: 0 } }, logos: {} }));
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'H3');
+    await A.goto(srv.url); await gotowa(A);
+    await wczytajKopie(A, plik, 'merge');
+    const snap = await zadanieJson(srv.port, '/api/snapshot');
+    const tx = snap.collections.transactions;
+    assert.deepEqual([1, 2, 3, 4, 5].map((n) => tx[`rem${n}`].nr), ['WZ-00006', 'WZ-00007', 'WZ-00008', 'WZ-00009', 'WZ-00010']);
+    sprawdzNumery(snap, 10);
+    assert.match(await zapiszOp(A, { kurier: 'dpd', ilosc: 3 }), /WZ-00011/, 'kolejna operacja — następny numer, bez dziury');
+    assert.deepEqual(A.bledy, []);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});

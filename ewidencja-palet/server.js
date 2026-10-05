@@ -11,15 +11,23 @@
                 127.0.0.1 = tylko ten komputer)
      DATA_DIR   folder z danymi (domyślnie ./dane obok tego pliku)
      EP_HASLO   jeśli ustawione — każde wejście wymaga hasła (HTTP Basic,
-                dowolna nazwa użytkownika); po 5 błędnych próbach z jednego adresu
-                kolejne są wstrzymywane (30 s, potem coraz dłużej, najwyżej 15 min)
+                dowolna nazwa użytkownika); po 5 różnych błędnych hasłach z jednego
+                adresu kolejne próby są wstrzymywane (30 s, potem coraz dłużej,
+                najwyżej 15 min). Zalogowane urządzenia (ciasteczko sesji) działają
+                w tym czasie normalnie.
      EP_HASLO_PLIK  zamiast EP_HASLO: ścieżka do pliku z hasłem w pierwszej linii
                 (dowolne znaki — bez problemów z $ i # w docker-compose.yml)
      EP_HOSTY   dodatkowe nazwy, pod którymi serwer odpowiada, po przecinku
                 (np. palety.example.pl,*.moj-nas.pl). Zawsze dozwolone: localhost,
-                adresy IP, nazwy bez kropki (np. nas) i *.local / *.lan / *.home.arpa /
-                *.internal. Inne nazwy są odrzucane (ochrona przed „DNS rebinding”).
+                adresy IP, nazwy bez kropki (np. nas) i *.local / *.lan / *.home /
+                *.home.arpa / *.internal / *.localdomain / *.corp / *.fritz.box.
+                Inne nazwy są odrzucane (ochrona przed „DNS rebinding”).
                 EP_HOSTY=* wyłącza tę kontrolę (niezalecane).
+     EP_ZAUFANE_PROXY  serwer stoi za odwrotnym serwerem proxy (np. Synology):
+                błędne hasła liczone są osobno dla adresu z nagłówka X-Forwarded-For,
+                a nie dla adresu proxy. 1 = ufaj każdemu nadawcy tego nagłówka (tylko
+                gdy port serwera nie jest dostępny z sieci z pominięciem proxy) albo
+                lista adresów proxy po przecinku (np. 172.17.0.1).
      EP_UZYTKOWNIK  (Docker/Synology) "auto" albo "UID:GID" — gdy serwer startuje
                 jako root: nadaje folderowi danych właściciela i przechodzi na
                 zwykłego użytkownika (patrz docker-compose.yml)
@@ -68,6 +76,7 @@ function konfiguracja(env, argv) {
     dataDir: path.resolve(env.DATA_DIR || path.join(ROOT, 'dane')),
     haslo: env.EP_HASLO_PLIK ? czytajHasloZPliku(env.EP_HASLO_PLIK) : (env.EP_HASLO || ''),
     hosty: listaHostow(env.EP_HOSTY),
+    zaufaneProxy: listaProxy(env.EP_ZAUFANE_PROXY),
     docker: env.EP_DOCKER === '1' || (env.EP_DOCKER !== '0' && fs.existsSync('/.dockerenv')),
     otworz: argv.includes('--otworz'),
     // „ping” w strumieniu zdarzeń; przeglądarka uznaje połączenie za zawieszone po ~35 s ciszy
@@ -88,8 +97,18 @@ function listaHostow(v) {
   return String(v || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
     .map((s) => (s === '*' ? s : s.replace(/^[a-z]+:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, '').replace(/\.$/, '')));
 }
-// nazwy zarezerwowane dla sieci lokalnych — nikt z internetu nie może ich „przejąć” przez DNS
-const LOKALNE_DOMENY = /\.(local|lan|localhost|internal|home\.arpa)$/;
+/** EP_ZAUFANE_PROXY: null = brak, '*' = każdy nadawca, inaczej lista adresów proxy. */
+function listaProxy(v) {
+  const t = String(v || '').trim().toLowerCase();
+  if (!t || ['0', 'nie', 'false', 'no'].includes(t)) return null;
+  if (['1', 'tak', 'true', 'yes', '*'].includes(t)) return '*';
+  return t.split(',').map((s) => normalizujAdres(s.trim())).filter(Boolean);
+}
+/** Adres IPv4 zapisany jako IPv6 (::ffff:192.168.1.5) → 192.168.1.5 */
+function normalizujAdres(a) { return String(a || '').replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, ''); }
+// nazwy zarezerwowane dla sieci lokalnych (i domyślne domeny popularnych routerów) — nikt z internetu nie
+// może ich „przejąć” przez DNS (.home i .corp ICANN wyłączyła z przydziału na stałe)
+const LOKALNE_DOMENY = /\.(local|lan|localhost|internal|home|corp|home\.arpa|localdomain|fritz\.box)$/;
 /**
  * Czy nagłówek Host wskazuje na ten serwer w sieci lokalnej? Chroni przed „DNS rebinding”: obca strona
  * otwarta w przeglądarce kogoś z tej sieci mogłaby inaczej czytać i zmieniać dane (zwłaszcza bez EP_HASLO).
@@ -622,37 +641,89 @@ function stworzSerwer(cfg, log) {
     for (const res of klienciSse) res.write(linia);
   };
 
-  // Hasło (HTTP Basic). Po PROG_PROB błędnych hasłach z jednego adresu kolejne próby z niego są przez
-  // pewien czas odrzucane bez sprawdzania (429): 30 s, potem dwa razy dłużej przy każdej następnej
-  // pomyłce, najwyżej 15 min. Poprawne hasło kasuje licznik. Żądania bez hasła (pierwsze wejście
-  // przeglądarki) się nie liczą.
+  // Hasło (HTTP Basic) i sesje. Po poprawnym haśle przeglądarka dostaje ciasteczko sesji (ep_sesja, HttpOnly):
+  // żądania z ważnym ciasteczkiem przechodzą bez sprawdzania hasła i bez względu na blokadę, więc zalogowane
+  // urządzenia działają dalej, nawet gdy ktoś inny wpisuje złe hasła (albo wszyscy wchodzą przez jedno proxy).
+  // Po PROG_PROB różnych błędnych hasłach z jednego adresu kolejne próby z niego są przez pewien czas odrzucane
+  // bez sprawdzania (429): 30 s, potem dwa razy dłużej przy każdym następnym nowym błędnym haśle, najwyżej
+  // 15 min. To samo błędne hasło powtarzane w kółko (np. stare hasło zapamiętane przez przeglądarkę po zmianie
+  // hasła na serwerze) liczy się raz. Poprawne hasło kasuje licznik. Żądania bez hasła (pierwsze wejście
+  // przeglądarki) się nie liczą. Sesje są tylko w pamięci — ponowne uruchomienie serwera (np. ze zmienionym
+  // hasłem) je unieważnia.
   const PROG_PROB = 5, MAKS_BLOKADA_MS = 15 * 60 * 1000, ZAPOMNIJ_MS = 60 * 60 * 1000;
-  const proby = new Map(); // adres -> {n, blokadaDo, ostatnio}
-  function hasloPoprawne(b64) {
+  const SESJA_MS = 30 * 24 * 3600 * 1000, MAKS_SESJI = 10000, CIASTKO = 'ep_sesja';
+  const proby = new Map(); // klucz (adres) -> {n, zle: Set skrótów błędnych haseł, blokadaDo, ostatnio}
+  const sesje = new Map(); // token -> ważna do (ms)
+  const skrot = (s) => crypto.createHash('sha256').update(s, 'utf8').digest();
+  const skrotHasla = cfg.haslo ? skrot(cfg.haslo) : null;
+  /** hasło z nagłówka Basic (po dwukropku) albo null */
+  function hasloZNaglowka(b64) {
     const dek = Buffer.from(b64, 'base64').toString('utf8');
-    const i = dek.indexOf(':'); if (i < 0) return false;
-    const h = (s) => crypto.createHash('sha256').update(s, 'utf8').digest();
-    return crypto.timingSafeEqual(h(dek.slice(i + 1)), h(cfg.haslo));
+    const i = dek.indexOf(':');
+    return i < 0 ? null : dek.slice(i + 1);
   }
-  /** {ok:true} | {ok:false} (401) | {ok:false, blokada: sekundy} (429) */
+  /** adres, od którego liczone są błędne hasła (za zaufanym proxy — klient z X-Forwarded-For) */
+  function kluczKlienta(req) {
+    const adres = normalizujAdres((req.socket && req.socket.remoteAddress) || '?');
+    const zp = cfg.zaufaneProxy;
+    if (zp && (zp === '*' || zp.includes(adres))) {
+      // ostatni wpis dopisało nasze proxy — wcześniejsze mógł podać sam klient
+      const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+      if (xff.length) return normalizujAdres(xff[xff.length - 1]).slice(0, 100);
+    }
+    return adres;
+  }
+  function sesjaWazna(req) {
+    const m = /(?:^|;\s*)ep_sesja=([A-Za-z0-9_-]{20,64})(?:;|$)/.exec(String(req.headers.cookie || ''));
+    if (!m) return false;
+    const do_ = sesje.get(m[1]);
+    if (do_ === undefined) return false;
+    if (do_ <= Date.now()) { sesje.delete(m[1]); return false; }
+    return true;
+  }
+  function nowaSesja(req) {
+    const teraz = Date.now();
+    if (sesje.size >= MAKS_SESJI) {
+      for (const [k, v] of sesje) if (v <= teraz) sesje.delete(k);
+      // wciąż pełno — najstarsze (pierwsze w kolejności dodania) wypadają
+      for (const k of sesje.keys()) { if (sesje.size < MAKS_SESJI) break; sesje.delete(k); }
+    }
+    const token = crypto.randomBytes(24).toString('base64url');
+    sesje.set(token, teraz + SESJA_MS);
+    const https = cfg.zaufaneProxy && /^https$/i.test(String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim());
+    return `${CIASTKO}=${token}; Path=/; Max-Age=${Math.floor(SESJA_MS / 1000)}; HttpOnly; SameSite=Strict${https ? '; Secure' : ''}`;
+  }
+  /** {ok:true, ciastko?} | {ok:false} (401) | {ok:false, blokada: sekundy} (429) */
   function autoryzacja(req) {
     if (!cfg.haslo) return { ok: true };
+    if (sesjaWazna(req)) return { ok: true };
     const m = /^Basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(String(req.headers.authorization || ''));
     if (!m) return { ok: false };
-    const ip = (req.socket && req.socket.remoteAddress) || '?', teraz = Date.now();
-    let p = proby.get(ip);
-    if (p && p.blokadaDo <= teraz && teraz - p.ostatnio > ZAPOMNIJ_MS) { proby.delete(ip); p = undefined; }
+    const klucz = kluczKlienta(req), teraz = Date.now();
+    let p = proby.get(klucz);
+    if (p && p.blokadaDo <= teraz && teraz - p.ostatnio > ZAPOMNIJ_MS) { proby.delete(klucz); p = undefined; }
     if (p && p.blokadaDo > teraz) return { ok: false, blokada: Math.ceil((p.blokadaDo - teraz) / 1000) };
-    if (hasloPoprawne(m[1])) { if (p) proby.delete(ip); return { ok: true }; }
+    const haslo = hasloZNaglowka(m[1]);
+    const sk = haslo === null ? null : skrot(haslo);
+    if (sk && crypto.timingSafeEqual(sk, skrotHasla)) {
+      if (p) proby.delete(klucz);
+      // sesja tylko dla przeglądarek — nie dla kontroli zdrowia kontenera (co 30 s, bez User-Agent)
+      const przegladarka = req.headers['user-agent'] && !String(req.url || '').startsWith('/api/ping');
+      return { ok: true, ciastko: przegladarka ? nowaSesja(req) : null };
+    }
     if (!p) {
       if (proby.size >= 10000) for (const [k, v] of proby) if (v.blokadaDo <= teraz) proby.delete(k);
-      p = { n: 0, blokadaDo: 0, ostatnio: 0 }; proby.set(ip, p);
+      p = { n: 0, zle: new Set(), blokadaDo: 0, ostatnio: 0 }; proby.set(klucz, p);
     }
-    p.n++; p.ostatnio = teraz;
+    p.ostatnio = teraz;
+    const id = sk ? sk.toString('base64', 0, 12) : '?';
+    if (p.zle.has(id)) return { ok: false }; // to samo błędne hasło jeszcze raz — już policzone
+    if (p.zle.size >= 200) p.zle.clear();
+    p.zle.add(id); p.n++;
     if (p.n >= PROG_PROB) {
       const ms = Math.min(MAKS_BLOKADA_MS, cfg.blokadaHaslaMs * 2 ** Math.min(20, p.n - PROG_PROB));
       p.blokadaDo = teraz + ms;
-      log.warn(`Uwaga: ${p.n} błędnych haseł z adresu ${ip} — kolejne próby z tego adresu wstrzymane na ${Math.ceil(ms / 1000)} s.`);
+      log.warn(`Uwaga: ${p.n} różnych błędnych haseł z adresu ${klucz} — kolejne próby z tego adresu wstrzymane na ${Math.ceil(ms / 1000)} s (zalogowane urządzenia działają dalej).`);
     }
     return { ok: false };
   }
@@ -888,9 +959,13 @@ function stworzSerwer(cfg, log) {
     const auth = autoryzacja(req);
     if (!auth.ok) {
       req.resume();
-      if (auth.blokada) return wyslijTekst(res, 429, `Za dużo błędnych haseł z tego urządzenia. Spróbuj ponownie za ${auth.blokada} s.`, { 'Retry-After': String(auth.blokada) });
+      if (auth.blokada) {
+        const czas = auth.blokada < 120 ? `${auth.blokada} s` : `${Math.ceil(auth.blokada / 60)} min`;
+        return wyslijTekst(res, 429, `Za dużo błędnych haseł. Logowanie jest chwilowo wstrzymane — spróbuj ponownie za ${czas}.\n\nUrządzenia, które są już zalogowane, działają normalnie.`, { 'Retry-After': String(auth.blokada) });
+      }
       return wyslijTekst(res, 401, 'Podaj hasło, aby otworzyć Ewidencję Palet.', { 'WWW-Authenticate': 'Basic realm="Ewidencja Palet", charset="UTF-8"' });
     }
+    if (auth.ciastko) res.setHeader('Set-Cookie', auth.ciastko);
     try {
       if (sciezka.startsWith('/api/')) return await obsluzApi(req, res, sciezka);
       if (sciezka.startsWith('/_blob/')) {
