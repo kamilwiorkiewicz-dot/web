@@ -1556,3 +1556,29 @@ test('(h5) blokada haseł (429) na serwerze: zalogowana karta działa dalej; kar
     assert.deepEqual(A.bledy, []);
   } finally { await ctxA.close(); await ctxB.close(); await srv.zatrzymaj(); }
 });
+
+test('(h6) kopia zapasowa serwera: stan w „O aplikacji”; gdy się nie zapisuje — pasek ostrzeżenia, znika po naprawie', { timeout: 120000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const tmp = tymczasowyKatalog('ep-kz-'); sprzatanie.push(tmp);
+  const zly = path.join(tmp, 'kopia'); fs.writeFileSync(zly, 'zwykły plik zamiast folderu');
+  const port = await wolnyPort();
+  let srv = await uruchomSerwer({ dataDir: dane, port, env: { EP_KOPIA_ZAPASOWA: zly, EP_KOPIA_ZAPASOWA_MS: '200', EP_HEARTBEAT_MS: '500' } });
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'H6');
+    await A.goto(srv.url); await gotowa(A);
+    const baner = await A.waitForSelector('[data-ep-banner="kopia"]', { timeout: 10000 });
+    assert.match(await baner.textContent(), /kopia zapasowa na serwerze się nie zapisuje/);
+    await doUstawien(A);
+    await A.waitForFunction(() => /Kopia zapasowa\s*nie zapisuje się/.test(document.getElementById('main').innerText));
+    // naprawa: folder zamiast pliku — serwer ponawia przy zmianie, pasek znika sam
+    fs.unlinkSync(zly); fs.mkdirSync(zly);
+    await dodajOperacje(A, { kurier: 'dpd', ilosc: 3 });
+    await czekajNaToast(A, /WZ-00001/);
+    await A.waitForFunction(() => !document.querySelector('[data-ep-banner="kopia"]'), null, { timeout: 15000 });
+    assert.ok(fs.existsSync(path.join(zly, 'ewidencja-palet-aktualna.json')));
+    await idzDo(A, 'dashboard'); await doUstawien(A);
+    await A.waitForFunction(() => /Kopia zapasowa\s*po każdej zmianie · ostatnia: \d\d\.\d\d\.\d{4}/.test(document.getElementById('main').innerText));
+    assert.deepEqual(A.bledy, []);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});

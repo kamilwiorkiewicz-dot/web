@@ -2308,6 +2308,7 @@ function viewSettings(){
         <div class="panel-title"><h2>O aplikacji</h2></div>
         <dl class="kv">
           <dt>Tryb pracy</dt><dd>${escapeHtml(info.label)}</dd>
+          ${backupRow(info)}
           <dt>Kurierzy</dt><dd>${num(couriers.length)} (aktywni: ${num(couriers.filter(isEnabled).length)})</dd>
           <dt>Operacje</dt><dd>${num(transactions.length)}${dates.length? ` · ${fmtDate(dates[0])} – ${fmtDate(dates[dates.length-1])}` : ''}${historyComplete? '' : ' (wczytywanie…)'}</dd>
           <dt>Wersja</dt><dd>${escapeHtml(APP_VERSION)}</dd>
@@ -2353,6 +2354,17 @@ async function exportBackup(){
   }
 }
 
+// local server (runtime-lokalny.js): state of its automatic second copy (EP_KOPIA_ZAPASOWA)
+function backupRow(info){
+  if(info.mode!=='server') return '';
+  const k = window.EP_LOCAL && window.EP_LOCAL.backup;
+  let v;
+  if(!k) v = 'wyłączona na serwerze (EP_KOPIA_ZAPASOWA — patrz instrukcja)';
+  else if(k.ok===false) v = `<span style="color:var(--bad); font-weight:600;">nie zapisuje się${k.blad ? ` (${escapeHtml(k.blad)})` : ''} — sprawdź folder kopii na serwerze</span>`;
+  else if(k.ok && k.kiedy){ const d = new Date(k.kiedy); v = `po każdej zmianie · ostatnia: ${isNaN(d) ? '—' : escapeHtml(d.toLocaleString('pl-PL', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'}))}`; }
+  else v = 'po każdej zmianie';
+  return `<dt>Kopia zapasowa</dt><dd>${v}</dd>`;
+}
 function parseBackup(text){
   let j; try{ j = JSON.parse(text); }catch(e){ throw new Error('To nie jest prawidłowy plik JSON.'); }
   if(!j || j.app!=='ewidencja-palet' || !Array.isArray(j.transactions) || !Array.isArray(j.couriers)) throw new Error('To nie jest plik kopii Ewidencji Palet.');

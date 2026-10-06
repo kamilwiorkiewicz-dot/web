@@ -1047,3 +1047,44 @@ test('EP_HASLO_PLIK: hasło z pliku (BOM, CRLF, znaki $ # \' i spacje), kontrola
   fs.writeFileSync(plik, '\r\n');
   await assert.rejects(uruchomSerwer({ dataDir: d, env: { EP_HASLO_PLIK: plik } }), /jest pusty/);
 });
+
+test('EP_KOPIA_ZAPASOWA: pełna kopia w formacie aplikacji po każdej zmianie, plik dnia, stan dla aplikacji, zapis przy wyłączeniu', async () => {
+  const d = tymczasowyKatalog(); sprzatanie.push(d);
+  const kz = path.join(tymczasowyKatalog(), 'kopia'); sprzatanie.push(path.dirname(kz));
+  const s2 = await uruchomSerwer({ dataDir: d, env: { EP_KOPIA_ZAPASOWA: kz, EP_KOPIA_ZAPASOWA_MS: '200' } });
+  const aktualna = path.join(kz, 'ewidencja-palet-aktualna.json');
+  try {
+    assert.ok(fs.existsSync(aktualna), 'kopia zapisana od razu przy starcie (sprawdzenie folderu)');
+    const p0 = (await zadanie(s2.port, { path: '/api/ping' })).json;
+    assert.equal(p0.kopiaZapasowa.ok, true);
+    const op = { kurierId: 'dpd', kurierNazwa: 'DPD', typ: 'wydanie', ilosc: 7, data: '2026-10-06', uwagi: '', createdAt: 1, nr: 'WZ-00001' };
+    assert.equal((await jsonPost(s2.port, '/api/write', { op: 'set', coll: 'transactions', id: 't1', data: op })).status, 200);
+    await new Promise((r) => setTimeout(r, 700));
+    const k = JSON.parse(fs.readFileSync(aktualna, 'utf8'));
+    assert.equal(k.app, 'ewidencja-palet');
+    assert.deepEqual(k.transactions.map((t) => [t.id, t.nr, t.ilosc]), [['t1', 'WZ-00001', 7]]);
+    const dnia = fs.readdirSync(kz).filter((f) => /^ewidencja-palet-\d{4}-\d{2}-\d{2}\.json$/.test(f));
+    assert.equal(dnia.length, 1, 'plik dnia');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(kz, dnia[0]), 'utf8')).transactions.length, 1);
+    const snap = (await zadanie(s2.port, { path: '/api/snapshot' })).json;
+    assert.equal(snap.kopiaZapasowa.ok, true);
+    assert.match(snap.kopiaZapasowa.kiedy, /^\d{4}-\d{2}-\d{2}T/);
+  } finally { await s2.zatrzymaj(); }
+  // zmiana tuż przed wyłączeniem (opóźnienie dłuższe niż czas pracy) trafia do kopii przy zatrzymaniu
+  const s3 = await uruchomSerwer({ dataDir: d, env: { EP_KOPIA_ZAPASOWA: kz, EP_KOPIA_ZAPASOWA_MS: '50000' } });
+  try {
+    await jsonPost(s3.port, '/api/write', { op: 'update', coll: 'transactions', id: 't1', data: { ilosc: 9 } });
+  } finally { await s3.zatrzymaj(); }
+  assert.equal(JSON.parse(fs.readFileSync(aktualna, 'utf8')).transactions[0].ilosc, 9, 'kopia zapisana przy wyłączeniu');
+  // folder kopii nie do zapisu (tu: zwykły plik) → stan „nie działa” dla aplikacji i błąd w dzienniku; dane i tak zapisane
+  const zly = path.join(tymczasowyKatalog(), 'to-jest-plik'); sprzatanie.push(path.dirname(zly));
+  fs.writeFileSync(zly, 'x');
+  const s4 = await uruchomSerwer({ dataDir: d, env: { EP_KOPIA_ZAPASOWA: zly, EP_KOPIA_ZAPASOWA_MS: '100' } });
+  try {
+    const p = (await zadanie(s4.port, { path: '/api/ping' })).json;
+    assert.equal(p.kopiaZapasowa.ok, false);
+    assert.ok(p.kopiaZapasowa.blad);
+    assert.equal((await jsonPost(s4.port, '/api/write', { op: 'update', coll: 'transactions', id: 't1', data: { ilosc: 11 } })).status, 200, 'zapis do bazy działa mimo awarii kopii');
+    assert.match(s4.bledy(), /nie udało się zapisać kopii zapasowej/);
+  } finally { await s4.zatrzymaj(); }
+});

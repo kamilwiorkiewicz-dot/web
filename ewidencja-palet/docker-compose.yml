@@ -1,6 +1,7 @@
 # Ewidencja Palet — Synology Container Manager (Projekt → Utwórz → istniejący docker-compose.yml)
 # albo dowolny Docker:  docker compose up -d --build
 # Aplikacja: http://ADRES-NAS:8080   ·   Dane: podfolder ./dane obok tego pliku (baza, loga, kopie dzienne)
+# Kopia zapasowa po każdej zmianie: podfolder ./kopia-zapasowa (najlepiej przenieś ją na inny dysk — niżej)
 services:
   ewidencja-palet:
     build: .
@@ -11,6 +12,12 @@ services:
       - "8080:8080"            # zmiana portu na NAS-ie: "8090:8080" (zmienia się tylko liczba PRZED dwukropkiem)
     volumes:
       - ./dane:/app/dane
+      # DRUGA KOPIA ewidencji, zapisywana automatycznie po każdej zmianie (pełny stan, gotowy do wczytania
+      # w aplikacji). Najbezpieczniej na INNYM dysku niż dane — zamień lewą stronę (przed dwukropkiem) np. na:
+      #   /volumeUSB1/usbshare/ewidencja-kopia     (dysk USB podłączony do NAS-a)
+      #   /volume2/kopie/ewidencja-palet           (drugi wolumin)
+      # Ten folder warto też objąć zadaniem Hyper Backup albo Cloud Sync (instrukcja: „Bezpieczeństwo danych”).
+      - ./kopia-zapasowa:/app/kopia-zapasowa
     # Folder ./dane na NAS-ie należy zwykle do Twojego użytkownika DSM (a gdy go nie ma, Docker tworzy go
     # jako root), więc zwykły użytkownik kontenera nie mógłby w nim zapisywać. Dlatego kontener startuje
     # jako root, serwer nadaje folderowi danych właściciela i NATYCHMIAST przechodzi na zwykłego użytkownika
@@ -20,6 +27,7 @@ services:
     environment:
       - TZ=Europe/Warsaw
       - EP_UZYTKOWNIK=auto
+      - EP_KOPIA_ZAPASOWA=/app/kopia-zapasowa
       # HASŁO do aplikacji (zalecane, gdy NAS jest dostępny z internetu). Przeglądarka zapyta o nie przy
       # wejściu, nazwa użytkownika może być dowolna. Wybierz JEDEN z dwóch sposobów:
       #

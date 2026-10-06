@@ -30,6 +30,8 @@ rem Haslo dostepu (przegladarka zapyta o nie; znak %% w hasle wpisz podwojnie):
 rem set "EP_HASLO=twoje haslo"
 rem Wlasna domena, np. za odwrotnym serwerem proxy (kilka nazw po przecinku):
 rem set "EP_HOSTY=palety.example.pl"
+rem Druga kopia po kazdej zmianie - folder na INNYM dysku albo w OneDrive / Google Drive:
+rem set "EP_KOPIA_ZAPASOWA=D:\Kopie\Ewidencja palet"
 node server.js --otworz
 if errorlevel 1 goto koniec_blad
 goto :eof

@@ -29,6 +29,12 @@
                 w dzienniku przy pierwszym takim żądaniu), np. 172.17.0.1; kilka po
                 przecinku. 1 = ufaj każdemu nadawcy tego nagłówka (wtedy osobny, wyższy
                 limit błędnych haseł obowiązuje też dla adresu nadawcy).
+     EP_KOPIA_ZAPASOWA  folder na drugą, niezależną kopię (zalecane: inny dysk, dysk USB
+                albo folder objęty Hyper Backup / synchronizacją z chmurą). Po każdej zmianie
+                (najpóźniej po kilkunastu sekundach) serwer zapisuje tam pełny stan w formacie
+                kopii aplikacji: ewidencja-palet-aktualna.json oraz plik dnia
+                ewidencja-palet-RRRR-MM-DD.json (stan z końca dnia, 90 ostatnich dni).
+                Gdy zapis się nie udaje, aplikacja pokazuje ostrzeżenie.
      EP_UZYTKOWNIK  (Docker/Synology) "auto" albo "UID:GID" — gdy serwer startuje
                 jako root: nadaje folderowi danych właściciela i przechodzi na
                 zwykłego użytkownika (patrz docker-compose.yml)
@@ -41,6 +47,8 @@
           DATA_DIR/zalaczniki/<id>     wgrane loga kurierów
           DATA_DIR/kopie/baza-RRRR-MM-DD.json   kopia dzienna (30 ostatnich): stan z początku
                                                 dnia, sprzed pierwszej zmiany tego dnia
+          DATA_DIR/sesje.json          zapamiętane logowania (tylko z EP_HASLO)
+          EP_KOPIA_ZAPASOWA/...        druga kopia po każdej zmianie (gdy ustawione)
           DATA_DIR/odtworzenie.json    ślad po odtworzeniu bazy z kopii przy starcie
                                        (aplikacja pokazuje wtedy jednorazowy komunikat)
    ========================================================================= */
@@ -83,6 +91,9 @@ function konfiguracja(env, argv) {
     // „ping” w strumieniu zdarzeń; przeglądarka uznaje połączenie za zawieszone po ~35 s ciszy
     heartbeatMs: Number(env.EP_HEARTBEAT_MS) > 0 ? Number(env.EP_HEARTBEAT_MS) : 15000,
     blokadaHaslaMs: Number(env.EP_BLOKADA_HASLA_MS) > 0 ? Number(env.EP_BLOKADA_HASLA_MS) : 30000,
+    kopiaZapasowa: env.EP_KOPIA_ZAPASOWA ? path.resolve(env.EP_KOPIA_ZAPASOWA) : null,
+    // opóźnienie zapisu kopii zapasowej po zmianie (kilka zmian pod rząd = jeden zapis); najwyżej minuta
+    kopiaZapasowaMs: Number(env.EP_KOPIA_ZAPASOWA_MS) > 0 ? Number(env.EP_KOPIA_ZAPASOWA_MS) : 10000,
   };
 }
 /** Hasło z pliku (EP_HASLO_PLIK): pierwsza linia, bez BOM i końca linii (plik z Notatnika też działa). */
@@ -634,7 +645,44 @@ function stworzSerwer(cfg, log) {
       : `event: changes\ndata: ${JSON.stringify({ clientId: cid, changes: zmiany.map((z) => ({ rev: z.rev, coll: z.coll, id: z.id, data: z.data })) })}\n\n`;
     for (const res of klienciSse) res.write(linia);
     for (const z of zmiany) if (z.rev > revRozeslany) revRozeslany = z.rev;
+    kopiaWkrotce(); // zmiana jest już na dysku — druga kopia za chwilę
   }
+
+  // Druga, niezależna kopia (EP_KOPIA_ZAPASOWA): po zmianach pełny stan w formacie kopii aplikacji (z logami) —
+  // ewidencja-palet-aktualna.json i plik dnia (stan z końca dnia). Każdy z nich da się wczytać w aplikacji
+  // („Wczytaj kopię z pliku”) albo posłuży do odtworzenia. Stan zapisu trafia do aplikacji (pasek ostrzeżenia).
+  const DNI_KOPII_ZAPASOWEJ = 90;
+  const stanKopii = { ok: null, kiedy: null, blad: null };
+  let kopiaTimer = null, kopiaOd = 0;
+  function zapiszKopieZapasowa() {
+    clearTimeout(kopiaTimer); kopiaTimer = null; kopiaOd = 0;
+    if (!cfg.kopiaZapasowa) return;
+    try {
+      fs.mkdirSync(cfg.kopiaZapasowa, { recursive: true });
+      const tekst = JSON.stringify(baza.kopiaDoPobrania(), null, 1);
+      zapiszAtomowo(path.join(cfg.kopiaZapasowa, 'ewidencja-palet-aktualna.json'), tekst);
+      zapiszAtomowo(path.join(cfg.kopiaZapasowa, `ewidencja-palet-${dzisiaj()}.json`), tekst);
+      const dni = fs.readdirSync(cfg.kopiaZapasowa).filter((f) => /^ewidencja-palet-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort();
+      for (const f of dni.slice(0, Math.max(0, dni.length - DNI_KOPII_ZAPASOWEJ))) { try { fs.unlinkSync(path.join(cfg.kopiaZapasowa, f)); } catch (e) { /* ignore */ } }
+      if (stanKopii.ok === false) log.warn(`Kopia zapasowa w ${cfg.kopiaZapasowa} znowu się zapisuje.`);
+      stanKopii.ok = true; stanKopii.kiedy = new Date().toISOString(); stanKopii.blad = null;
+    } catch (e) {
+      if (stanKopii.ok !== false) log.error(`BŁĄD: nie udało się zapisać kopii zapasowej w ${cfg.kopiaZapasowa} (${e.code || e.message}). Dane są bezpieczne w ${cfg.dataDir}, ale sprawdź ten folder (dysk podłączony? uprawnienia do zapisu?). Następna próba za minutę.`);
+      stanKopii.ok = false; stanKopii.blad = String(e.code || e.message).slice(0, 200);
+      kopiaTimer = setTimeout(zapiszKopieZapasowa, 60000);
+      if (kopiaTimer.unref) kopiaTimer.unref();
+    }
+  }
+  function kopiaWkrotce() {
+    if (!cfg.kopiaZapasowa) return;
+    const teraz = Date.now();
+    if (!kopiaOd) kopiaOd = teraz;
+    clearTimeout(kopiaTimer);
+    // ciągłe zmiany nie odsuwają kopii w nieskończoność: najwyżej minuta od pierwszej niezapisanej zmiany
+    kopiaTimer = setTimeout(zapiszKopieZapasowa, Math.max(0, Math.min(cfg.kopiaZapasowaMs, kopiaOd + 60000 - teraz)));
+    if (kopiaTimer.unref) kopiaTimer.unref();
+  }
+  const stanKopiiDlaAplikacji = () => (cfg.kopiaZapasowa ? { kopiaZapasowa: { ...stanKopii } } : {});
   // nieudany zapis na dysk: stan w pamięci wrócił do ostatnio zapisanego — klienci wczytują go od nowa
   baza.poWycofaniu = () => {
     revRozeslany = baza.rev;
@@ -846,7 +894,7 @@ function stworzSerwer(cfg, log) {
     const metoda = req.method;
     if (sciezka === '/api/ping') {
       if (metoda !== 'GET' && metoda !== 'HEAD') throw bladApi(405, 'method_not_allowed', 'Dozwolone: GET');
-      return wyslijJson(res, 200, { app: APP, version: VERSION, mode: 'server', ...(odtworzenie ? { odtworzenie } : {}) });
+      return wyslijJson(res, 200, { app: APP, version: VERSION, mode: 'server', ...(odtworzenie ? { odtworzenie } : {}), ...stanKopiiDlaAplikacji() });
     }
     if (sciezka === '/api/rev') {
       // tanie sprawdzenie aktualności lustra danych w przeglądarce (patrz revRozeslany)
@@ -856,7 +904,7 @@ function stworzSerwer(cfg, log) {
     if (sciezka === '/api/snapshot') {
       if (metoda !== 'GET') throw bladApi(405, 'method_not_allowed', 'Dozwolone: GET');
       await baza.poZapisie(); // nie pokazuj zmian, które jeszcze nie są na dysku
-      return wyslijJson(res, 200, { ...baza.snapshot(), serverId, version: VERSION, ...(odtworzenie ? { odtworzenie } : {}) });
+      return wyslijJson(res, 200, { ...baza.snapshot(), serverId, version: VERSION, ...(odtworzenie ? { odtworzenie } : {}), ...stanKopiiDlaAplikacji() });
     }
     if (sciezka === '/api/write') {
       if (metoda !== 'POST') throw bladApi(405, 'method_not_allowed', 'Dozwolone: POST');
@@ -1087,9 +1135,10 @@ function stworzSerwer(cfg, log) {
     revRozeslany = baza.rev;
     odtworzenie = zapamietajOdtworzenie(wynik);
     baza.kopiaDzienna();
+    if (cfg.kopiaZapasowa) zapiszKopieZapasowa(); // od razu przy starcie: sprawdza, czy folder działa
     heartbeat = setInterval(() => {
       // rev: wszystko do tego numeru zostało już wysłane tym strumieniem (klient z mniejszym — coś zgubił)
-      const linia = `event: ping\ndata: ${JSON.stringify({ rev: revRozeslany, t: Date.now() })}\n\n`;
+      const linia = `event: ping\ndata: ${JSON.stringify({ rev: revRozeslany, t: Date.now(), ...stanKopiiDlaAplikacji() })}\n\n`;
       for (const res of klienciSse) res.write(linia);
     }, cfg.heartbeatMs);
     heartbeat.unref();
@@ -1097,11 +1146,12 @@ function stworzSerwer(cfg, log) {
   }
   function zatrzymaj() {
     if (heartbeat) clearInterval(heartbeat);
+    if (kopiaTimer && stanKopii.ok !== false) zapiszKopieZapasowa(); // niezapisana kopia przed wyłączeniem
     if (zapisSesji) { clearTimeout(zapisSesji); zapisSesji = null; if (cfg.haslo) zapiszSesjeTeraz(); }
     for (const res of klienciSse) { try { res.end(); } catch (e) { /* ignore */ } }
     klienciSse.clear();
   }
-  return { serwer, baza, start, zatrzymaj, klienciSse, revRozeslany: () => revRozeslany };
+  return { serwer, baza, start, zatrzymaj, klienciSse, revRozeslany: () => revRozeslany, stanKopii: () => ({ ...stanKopii }) };
 }
 
 /* ---------------------------- uruchomienie ---------------------------- */
@@ -1128,6 +1178,7 @@ function tekstStartowy(cfg, port, lan) {
       '     PORT      — liczba PRZED dwukropkiem w docker-compose.yml → ports (domyślnie 8080)',
       '',
       `  Dane zapisywane w:  folder podpięty w docker-compose.yml → volumes (domyślnie ./dane obok docker-compose.yml; w kontenerze ${cfg.dataDir})`,
+      `  Kopia zapasowa:     ${cfg.kopiaZapasowa ? `po każdej zmianie w ${cfg.kopiaZapasowa} (domyślnie ./kopia-zapasowa obok docker-compose.yml)` : 'WYŁĄCZONA — ustaw EP_KOPIA_ZAPASOWA w docker-compose.yml'}`,
       haslo,
       '', '  Zatrzymanie: Container Manager → Projekt → Zatrzymaj (albo: docker compose down).', ''].join('\n');
   }
@@ -1138,7 +1189,8 @@ function tekstStartowy(cfg, port, lan) {
     if (lan.length) for (const a of lan) linie.push(`  W sieci lokalnej:   http://${a.adres}:${port}   (${a.nazwa})`);
     else linie.push('  W sieci lokalnej:   (nie wykryto połączenia sieciowego)');
   } else linie.push('  (HOST=127.0.0.1 — serwer dostępny tylko z tego komputera)');
-  linie.push('', `  Dane zapisywane w:  ${cfg.dataDir}`, haslo,
+  linie.push('', `  Dane zapisywane w:  ${cfg.dataDir}`,
+    `  Kopia zapasowa:     ${cfg.kopiaZapasowa ? `po każdej zmianie w ${cfg.kopiaZapasowa}` : 'wyłączona (EP_KOPIA_ZAPASOWA — zalecany folder na innym dysku lub w chmurze)'}`, haslo,
     '', '  Aby zatrzymać serwer, naciśnij Ctrl+C (albo zamknij to okno).', '');
   return linie.join('\n');
 }
@@ -1190,6 +1242,14 @@ function zrzucUprawnienia(cfg, env) {
     if (st.uid !== uid || st.gid !== gid) fs.lchownSync(p, uid, gid);
     if (st.isDirectory()) for (const f of fs.readdirSync(p)) chownR(path.join(p, f));
   })(cfg.dataDir);
+  if (cfg.kopiaZapasowa) {
+    try {
+      fs.mkdirSync(cfg.kopiaZapasowa, { recursive: true });
+      const st = fs.lstatSync(cfg.kopiaZapasowa);
+      if (st.uid !== uid || st.gid !== gid) fs.lchownSync(cfg.kopiaZapasowa, uid, gid);
+      for (const f of fs.readdirSync(cfg.kopiaZapasowa)) { const pf = path.join(cfg.kopiaZapasowa, f); const s2 = fs.lstatSync(pf); if (s2.isFile() && (s2.uid !== uid || s2.gid !== gid)) fs.lchownSync(pf, uid, gid); }
+    } catch (e) { console.error(`Uwaga: nie udało się przygotować folderu kopii zapasowej ${cfg.kopiaZapasowa}: ${e.message}`); }
+  }
   if (process.setgroups) process.setgroups([gid]);
   process.setgid(gid);
   process.setuid(uid);

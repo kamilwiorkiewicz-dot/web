@@ -15,6 +15,7 @@ To jest ta sama aplikacja co wersja online w Claude: ta sama wersja, ten sam wyg
 | `uruchom.sh` | Uruchamia serwer w Linuksie / na NAS-ie z terminala. |
 | `Dockerfile`, `docker-compose.yml` | Uruchomienie na Synology (Container Manager) albo w Dockerze. |
 | `dane/` | Powstaje sam po pierwszym uruchomieniu serwera: baza (`baza.json`), logo kurierów (`zalaczniki/`) i kopie (`kopie/`). |
+| `kopia-zapasowa/` | Na Synology (i gdy ustawisz `EP_KOPIA_ZAPASOWA`): druga, pełna kopia ewidencji zapisywana po każdej zmianie. |
 | `zrodlo/aplikacja.html` | Aplikacja dokładnie w wersji online (z niej powstaje `index.html`). |
 | `narzedzia/`, `testy/`, `package.json` | Dla programisty: budowanie `index.html` i testy. Do codziennej pracy niepotrzebne. |
 
@@ -121,9 +122,25 @@ Przy **Zastąp wszystko** przenoszą się kurierzy (z logo, kolejnością, nazwa
 
 **Połącz** służy do dopisania brakujących operacji, gdy pracowano w dwóch miejscach naraz. Nic nie jest wtedy usuwane: istniejący kurierzy zachowują swoje nazwy, kolory i kolejność (u kurierów, którzy nie mają stanu początkowego albo logo, zostaną one uzupełnione z pliku), a operacje z pliku, których numer dokumentu jest tu już zajęty przez inną operację, dostaną nowe numery. Okno wczytywania pokazuje te różnice przed zapisem.
 
+## Bezpieczeństwo danych i synchronizacja (Synology)
+
+**Synchronizacja.** Wszystkie urządzenia (komputery, telefony) otwierają ten sam adres `http://ADRES-NAS:8080` i pracują na jednej bazie na NAS-ie. Zmiana zapisana na jednym urządzeniu pojawia się od razu na pozostałych. Po przeniesieniu danych z wersji online pracuj już tylko na NAS-ie — wersja online i NAS to dwie osobne bazy, które same się nie łączą.
+
+**Co chroni dane** (od najszybszej ochrony do najdalszej):
+1. **Zapis od razu.** Każda operacja trafia do `dane/baza.json` w chwili zapisu, a aplikacja potwierdza ją dopiero wtedy. Zapis jest atomowy — zanik prądu w trakcie nie uszkodzi pliku.
+2. **Kopia dzienna** w `dane/kopie/` — stan z początku każdego dnia, 30 ostatnich dni.
+3. **Kopia zapasowa po każdej zmianie** w folderze `kopia-zapasowa/` (obok `docker-compose.yml`): `ewidencja-palet-aktualna.json` (zawsze najnowszy stan, najpóźniej kilkanaście sekund po zmianie) i plik każdego dnia `ewidencja-palet-RRRR-MM-DD.json` (stan z końca dnia, 90 ostatnich dni). Każdy z tych plików wczytasz w aplikacji. Jeśli ta kopia przestanie się zapisywać (np. odłączony dysk), na górze aplikacji pojawi się pasek ostrzeżenia, a w **Ustawienia i kopia → O aplikacji** widać stan i godzinę ostatniej kopii.
+   **Zalecane:** trzymaj ten folder na **innym dysku** niż dane — w `docker-compose.yml` zmień lewą stronę linii `- ./kopia-zapasowa:/app/kopia-zapasowa`, np. na `- /volumeUSB1/usbshare/ewidencja-kopia:/app/kopia-zapasowa` (dysk USB podłączony do NAS-a), i zbuduj projekt ponownie.
+4. **Hyper Backup — kopia poza NAS-em (najważniejsze przy awarii lub kradzieży NAS-a).** W DSM otwórz **Hyper Backup** (Centrum pakietów, jeśli go brak) → **+** → **Zadanie kopii zapasowej danych** → miejsce docelowe: dysk USB albo chmura (np. **Synology C2**, Google Drive, OneDrive, Dropbox) → zaznacz cały folder projektu (np. `docker/ewidencja-palet`, razem z `dane` i `kopia-zapasowa`) → harmonogram **codziennie** (np. wieczorem) → włącz rotację kopii. Raz w miesiącu sprawdź w Hyper Backup, że ostatnie zadanie zakończyło się powodzeniem.
+5. **Opcjonalnie — kopia w chmurze na bieżąco:** pakiet **Cloud Sync** → połącz z Google Drive / OneDrive / Dropbox → folder lokalny `docker/ewidencja-palet/kopia-zapasowa` → kierunek **Przesyłaj tylko zmiany lokalne**. Wtedy aktualna kopia jest w chmurze kilka minut po każdej zmianie.
+6. **Opcjonalnie — migawki (wolumin Btrfs):** pakiet **Snapshot Replication** → migawki folderu współdzielonego `docker` co godzinę, np. 48 ostatnich. Chronią przed przypadkowym usunięciem i ransomware.
+
+**Odtwarzanie.** Najnowszy stan jest w `kopia-zapasowa/ewidencja-palet-aktualna.json`, a stan z wybranego dnia w `ewidencja-palet-RRRR-MM-DD.json`. Wczytaj plik w aplikacji: **Ustawienia i kopia → Wczytaj kopię z pliku → Zastąp wszystko**. Jeśli NAS trzeba postawić od nowa: zainstaluj aplikację jak w sposobie 3, otwórz ją i wczytaj ten plik (z dysku USB, z Hyper Backup albo z chmury).
+
 ## Kopie zapasowe
 
 - **Ustawienia i kopia → Pobierz kopię (.json)** działa w każdej wersji, a pobrany plik da się wczytać w każdej wersji. To jedyna kopia z **aktualnym** stanem — pobieraj ją regularnie (np. raz w tygodniu i przed większymi zmianami) i trzymaj poza komputerem: na pendrivie, w chmurze albo na NAS-ie.
+- Na komputerze z Windows/Mac/Linux kopię po każdej zmianie włączysz zmienną `EP_KOPIA_ZAPASOWA` z folderem na innym dysku albo w OneDrive / Google Drive / iCloud (gotowe, wyłączone linie są w plikach `Uruchom serwer…` i `uruchom.sh` — usuń `rem ` lub `# ` z początku i wpisz swój folder). Na Synology jest włączona od razu (patrz wyżej).
 - W trybie serwera powstaje też automatycznie **kopia dzienna** w `dane/kopie/` (plik `baza-RRRR-MM-DD.json`). Powstaje najwyżej jedna na dzień: przy pierwszym uruchomieniu serwera danego dnia albo tuż przed pierwszą zmianą danego dnia. Zawiera więc stan **z początku dnia, sprzed dzisiejszych zmian**. Trzymanych jest 30 najnowszych kopii.
 - Pełną, aktualną kopię z serwera pobierzesz od razu pod adresem `http://ADRES:8080/api/kopia`.
 - Żeby przywrócić dane z kopii (także z `dane/kopie/`), wczytaj plik w aplikacji: **Wczytaj kopię z pliku → Zastąp wszystko**. Uwaga: dzisiejsza kopia dzienna cofa wszystkie dzisiejsze zmiany — jeśli serwer działa, najpierw pobierz aktualną kopię (`/api/kopia`), żeby mieć do czego wrócić.
@@ -131,6 +148,7 @@ Przy **Zastąp wszystko** przenoszą się kurierzy (z logo, kolejnością, nazwa
 
 ## Najczęstsze problemy
 
+- **Pasek „Uwaga: kopia zapasowa na serwerze się nie zapisuje”.** Dane są zapisane w bazie, ale druga kopia nie działa: sprawdź, czy dysk z folderem `kopia-zapasowa` jest podłączony i czy jest na nim miejsce. Serwer ponawia próbę co minutę i przy każdej zmianie; pasek znika sam, gdy kopia znów się zapisze.
 - **„Brakuje plików aplikacji…” w oknie serwera.** Plik uruchomiono bez rozpakowania archiwum albo skopiowano go bez reszty folderu. Rozpakuj całe archiwum i uruchom plik z rozpakowanego folderu.
 - **Okno serwera pisze, że brakuje Node.js.** Zainstaluj Node.js (LTS) z https://nodejs.org i uruchom plik ponownie.
 - **„Port 8080 jest zajęty”.** Inny program (albo drugie okno serwera) używa tego portu. Zamknij poprzednie okno serwera albo uruchom z innym portem (patrz „Inny port”).

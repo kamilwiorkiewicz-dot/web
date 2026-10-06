@@ -647,6 +647,16 @@
     return once().then(function (r) { return r === 'unreachable' ? once() : r; });
   }
 
+  // stan drugiej kopii na serwerze (EP_KOPIA_ZAPASOWA): gdy zapis się nie udaje — stały pasek ostrzeżenia
+  function noteBackup(k) {
+    if (!k || typeof k !== 'object') return;
+    if (window.EP_LOCAL) window.EP_LOCAL.backup = k;
+    if (k.ok === false) {
+      showBanner('kopia', 'Uwaga: kopia zapasowa na serwerze się nie zapisuje' + (k.blad ? ' (' + String(k.blad).slice(0, 60) + ')' : '') +
+        '. Dane są zapisane w bazie serwera, ale sprawdź folder kopii zapasowej (dysk podłączony? uprawnienia?).');
+    } else if (k.ok === true) hideBanner('kopia');
+  }
+
   // karta ukryta dłużej niż minutę → rozłącz SSE: przeglądarka trzyma najwyżej 6 połączeń HTTP/1.1 z jednym
   // serwerem, a każda otwarta karta zajmuje jedno na stałe (7. karta by „wisiała”); po powrocie — wczytanie od nowa
   var OPCJE = window.EP_LOCAL_OPCJE || {}; // tylko do testów
@@ -746,6 +756,7 @@
       self.assets = new Map();
       (snap.assets || []).forEach(function (a) { self.assets.set(a.id, a); });
       if (snap.odtworzenie) showRestoreNotice(snap.odtworzenie);
+      noteBackup(snap.kopiaZapasowa);
       self.bumpMirror(rev);
       return rev;
     });
@@ -804,6 +815,7 @@
       // serwer odpowiada (np. po jednym odrzuconym żądaniu, gdy strumień działał dalej) — pasek „brak połączenia” znika
       if (!self.online && !self.authStop && !self.buffer) self.setOnline(true);
       var p = {}; try { p = JSON.parse(e.data); } catch (x) { /* ignore */ }
+      noteBackup(p.kopiaZapasowa);
       // wszystko do p.rev zostało już wysłane tym strumieniem — jeśli lustro jest niżej, coś zginęło
       if (self.anchored && !self.buffer && Number(p.rev) > self.mirrorRev) self.resync().then(noop, noop);
     });

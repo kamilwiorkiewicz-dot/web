@@ -17,7 +17,7 @@ WORKDIR /app
 COPY --chown=node:node server.js index.html runtime-lokalny.js ./
 COPY --chown=node:node fonts ./fonts
 COPY --chown=node:node narzedzia/kontrola-zdrowia.js ./narzedzia/
-RUN mkdir -p /app/dane && chown node:node /app/dane
+RUN mkdir -p /app/dane /app/kopia-zapasowa && chown node:node /app/dane /app/kopia-zapasowa
 
 # domyślnie bez uprawnień roota (docker-compose.yml może wystartować jako root tylko po to,
 # żeby nadać folderowi danych właściciela — serwer od razu przechodzi wtedy na zwykłego użytkownika)

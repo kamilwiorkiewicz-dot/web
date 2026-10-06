@@ -53,6 +53,8 @@ if [ ! -f index.html ]; then
 fi
 
 export PORT="${PORT:-8080}"
+# Druga kopia po każdej zmianie — folder na INNYM dysku albo w iCloud / Google Drive (usuń „# ” z początku):
+# export EP_KOPIA_ZAPASOWA="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Ewidencja palet - kopia"
 node server.js --otworz
 kod=$?
 if [ "$kod" -ne 0 ]; then zakoncz "$kod"; fi
