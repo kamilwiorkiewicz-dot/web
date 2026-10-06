@@ -1,0 +1,49 @@
+# Ewidencja Palet — Synology Container Manager (Projekt → Utwórz → istniejący docker-compose.yml)
+# albo dowolny Docker:  docker compose up -d --build
+# Aplikacja: http://ADRES-NAS:8080   ·   Dane: podfolder ./dane obok tego pliku (baza, loga, kopie dzienne)
+# Kopia zapasowa po każdej zmianie: podfolder ./kopia-zapasowa (najlepiej przenieś ją na inny dysk — niżej)
+services:
+  ewidencja-palet:
+    build: .
+    image: ewidencja-palet:latest
+    container_name: ewidencja-palet
+    restart: unless-stopped
+    ports:
+      - "8080:8080"            # zmiana portu na NAS-ie: "8090:8080" (zmienia się tylko liczba PRZED dwukropkiem)
+    volumes:
+      - ./dane:/app/dane
+      # DRUGA KOPIA ewidencji, zapisywana automatycznie po każdej zmianie (pełny stan, gotowy do wczytania
+      # w aplikacji). Najbezpieczniej na INNYM dysku niż dane — zamień lewą stronę (przed dwukropkiem) np. na:
+      #   /volumeUSB1/usbshare/ewidencja-kopia     (dysk USB podłączony do NAS-a)
+      #   /volume2/kopie/ewidencja-palet           (drugi wolumin)
+      # Ten folder warto też objąć zadaniem Hyper Backup albo Cloud Sync (instrukcja: „Bezpieczeństwo danych”).
+      - ./kopia-zapasowa:/app/kopia-zapasowa
+    # Folder ./dane na NAS-ie należy zwykle do Twojego użytkownika DSM (a gdy go nie ma, Docker tworzy go
+    # jako root), więc zwykły użytkownik kontenera nie mógłby w nim zapisywać. Dlatego kontener startuje
+    # jako root, serwer nadaje folderowi danych właściciela i NATYCHMIAST przechodzi na zwykłego użytkownika
+    # (EP_UZYTKOWNIK=auto: właściciel folderu ./dane, a gdy to root — użytkownik „node”).
+    # Jeśli wolisz inaczej: usuń „user” i EP_UZYTKOWNIK, a folderowi ./dane nadaj zapis dla UID 1000.
+    user: "0:0"
+    environment:
+      - TZ=Europe/Warsaw
+      - EP_UZYTKOWNIK=auto
+      - EP_KOPIA_ZAPASOWA=/app/kopia-zapasowa
+      # HASŁO do aplikacji (zalecane, gdy NAS jest dostępny z internetu). Przeglądarka zapyta o nie przy
+      # wejściu, nazwa użytkownika może być dowolna. Wybierz JEDEN z dwóch sposobów:
+      #
+      # Sposób A (najpewniejszy, hasło może zawierać dowolne znaki): utwórz w folderze „dane” plik
+      # haslo.txt z hasłem w pierwszej linii i odkomentuj linię niżej (usuń samo „# ” z jej początku):
+      # - EP_HASLO_PLIK=/app/dane/haslo.txt
+      #
+      # Sposób B: hasło wpisane tutaj. Całość w APOSTROFACH, a każdy znak $ wpisz PODWÓJNIE ($$);
+      # apostrof w haśle wpisz podwójnie (''). Przykład: hasło  Ab$12 #x  wpisz jako:
+      # - 'EP_HASLO=Ab$$12 #x'
+      # Bez apostrofów Docker Compose po cichu obcina hasło od „ #” i zamienia „$słowo” na pusty tekst.
+      #
+      # WŁASNA DOMENA (odwrotny serwer proxy z HTTPS, DDNS, np. palety.twojanazwa.synology.me): serwer
+      # odpowiada tylko pod adresem IP i nazwami lokalnymi (ochrona przed „DNS rebinding”). Dopisz domenę:
+      # - EP_HOSTY=palety.twojanazwa.synology.me
+      # Za odwrotnym serwerem proxy wszyscy łączą się z adresu proxy — żeby kilka pomyłek jednej osoby
+      # nie wstrzymywało logowania wszystkim, odkomentuj też i wpisz adres proxy, który serwer podaje
+      # w dzienniku („…ustaw EP_ZAUFANE_PROXY=…”); błędne hasła będą liczone osobno dla każdego:
+      # - EP_ZAUFANE_PROXY=172.17.0.1

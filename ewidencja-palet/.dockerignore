@@ -1,0 +1,11 @@
+dane
+testy
+zrodlo
+node_modules
+.git
+*.md
+*.command
+*.bat
+uruchom.sh
+narzedzia/*
+!narzedzia/kontrola-zdrowia.js

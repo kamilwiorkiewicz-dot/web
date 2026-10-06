@@ -1,0 +1,10 @@
+# Końce linii plików uruchomieniowych muszą przetrwać git (core.autocrlf) i pakowanie:
+#  - Windows cmd.exe potrafi źle skakać do etykiet (goto) w pliku .bat z samym LF,
+#  - bash na Macu / NAS-ie nie uruchomi skryptu z CRLF ("$'\r': command not found").
+*.bat      text eol=crlf
+*.command  text eol=lf
+*.sh       text eol=lf
+Dockerfile text eol=lf
+*.yml      text eol=lf
+*.woff2    binary
+*.png      binary
