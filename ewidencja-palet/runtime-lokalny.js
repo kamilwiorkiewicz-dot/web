@@ -599,11 +599,19 @@
         if (r.status === 415) throw err(opts.asset ? 'unsupported_type' : 'invalid_argument', msg);
         if (r.status === 400) throw err(opts.asset ? 'invalid_request' : 'invalid_argument', msg);
         if (r.status === 507 || code === 'quota_exceeded') throw err('quota_exceeded', msg);
-        if (r.status === 401) { var a = err('unavailable', 'Serwer wymaga hasła — odśwież stronę, aby się zalogować.'); a.auth = true; throw a; }
+        if (r.status === 401) {
+          // 401 serwera Ewidencji (pyta o hasło) albo obcego serwera pośredniczącego (proxy, logowanie firmowe)
+          var own = /Ewidencja Palet/.test(r.headers.get('WWW-Authenticate') || '');
+          var a = err('unavailable', own ? 'Serwer wymaga hasła — odśwież stronę i zaloguj się.' : 'Serwer pośredniczący (proxy) odrzucił połączenie (HTTP 401) — odśwież stronę.');
+          a.auth = true; a.foreign = !own; throw a;
+        }
         if (r.status === 429) {
           var s = Math.max(0, Number(r.headers.get('Retry-After')) || 0);
-          var l = err('unavailable', 'Za dużo błędnych haseł — logowanie chwilowo wstrzymane' + (s ? ' (spróbuj ponownie za ' + (s < 120 ? s + ' s' : Math.ceil(s / 60) + ' min') + ')' : '') + '.');
-          l.auth = true; l.lock = s || true; throw l;
+          if (r.headers.get('X-EP-Blokada') === '1') {
+            var l = err('unavailable', 'Za dużo błędnych haseł — logowanie chwilowo wstrzymane.');
+            l.auth = true; l.lock = s || 30; throw l;
+          }
+          var o = err('unavailable', 'Serwer chwilowo odrzuca żądania (429).'); o.network = true; throw o; // obce 429 (np. proxy): jak przerwa w połączeniu
         }
         if (r.status === 502 || r.status === 503 || r.status === 504) { var g = err('unavailable', 'Serwer nie odpowiada (' + r.status + ').'); g.network = true; throw g; }
         throw err('unavailable', msg);
@@ -679,6 +687,8 @@
     this.reconnectTimer = null;
     this.offlineTimer = null;
     this.authStop = null;        // serwer odrzucił hasło — bez prób w tle aż do odświeżenia strony
+    this.lockTimer = null;       // jedna próba po upływie blokady haseł (429 z X-EP-Blokada)
+    this.resumeInit = null;      // ponowne wczytywanie, gdy blokada przyszła jeszcze przed startem
     this.hideTimer = null;
     this.assets = new Map();
   }
@@ -687,6 +697,7 @@
     return new Promise(function (resolve) {
       var attempt = 0;
       (function tryLoad() {
+        self.resumeInit = tryLoad; // po minięciu blokady haseł wczytywanie rusza od nowa
         self.loadSnapshot().then(function () {
           self.started = true;
           self.connect();
@@ -922,18 +933,43 @@
   // przeglądarka wysyłałaby przy każdej zapamiętane stare hasło. Wznawia dopiero odświeżenie strony
   // (przeglądarka zapyta wtedy o hasło) albo udane żądanie wykonane na prośbę użytkownika.
   ServerBackend.prototype.stopForAuth = function (e) {
+    var self = this;
     this.authStop = e || true;
     clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
+    clearTimeout(this.lockTimer); this.lockTimer = null;
     if (this.es) { this.es.onerror = null; this.es.close(); this.es = null; }
     this.anchored = false; this.helloRev = null;
     this.online = false;
     if (window.EP_LOCAL) window.EP_LOCAL.online = false;
     clearTimeout(this.offlineTimer);
     hideBanner('offline');
-    var text = e && e.lock
-      ? e.message + ' Zmiany nie są zapisywane. Odśwież stronę i wpisz poprawne hasło.'
-      : 'Serwer wymaga hasła (mogło zostać zmienione) — zmiany nie są zapisywane. Odśwież stronę i zaloguj się.';
+    if (e && e.lock) {
+      // blokada haseł na serwerze (ktoś wpisał kilka złych haseł): po jej upływie jedna próba — w czasie blokady
+      // serwer niczego nie liczy, a to samo zapamiętane hasło i tak liczy się najwyżej raz
+      var sek = Math.max(1, Number(e.lock) || 30);
+      var until = new Date(Date.now() + sek * 1000);
+      var hh = function (n) { return (n < 10 ? '0' : '') + n; };
+      showBanner('auth', 'Za dużo błędnych haseł — logowanie wstrzymane do ' + hh(until.getHours()) + ':' + hh(until.getMinutes()) + ':' + hh(until.getSeconds()) +
+        '. Zmiany nie są zapisywane; strona połączy się ponownie sama.', { button: 'Spróbuj teraz', onClose: function () { self.retryAfterLock(); } });
+      this.lockTimer = setTimeout(function () { self.lockTimer = null; self.retryAfterLock(); }, (sek + 1 + Math.random() * 2) * 1000);
+      return;
+    }
+    var text = e && e.foreign
+      ? e.message.replace(/ — odśwież stronę\.$/, '') + ' — zmiany nie są zapisywane. Odśwież stronę.'
+      : 'Serwer wymaga hasła — zmiany nie są zapisywane. Odśwież stronę i zaloguj się (np. po zmianie hasła).';
     showBanner('auth', text, { button: 'Odśwież stronę', onClose: function () { window.location.reload(); } });
+  };
+  // jedna próba po blokadzie haseł (albo na prośbę użytkownika)
+  ServerBackend.prototype.retryAfterLock = function () {
+    var self = this;
+    clearTimeout(this.lockTimer); this.lockTimer = null;
+    if (!this.started) { this.authStop = null; hideBanner('auth'); if (this.resumeInit) this.resumeInit(); return; }
+    fetchJson(API + 'rev', {}, 5000).then(function () { self.noteOk(); }, function (e) {
+      if (e && e.auth) { self.stopForAuth(e); return; }
+      self.authStop = null; hideBanner('auth');
+      self.setOnline(false, true);
+      self.scheduleReconnect();
+    });
   };
   // każde żądanie do serwera: sukces = serwer jest osiągalny (pasek znika), brak odpowiedzi = pasek
   ServerBackend.prototype.request = function (url, opts, timeoutMs) {
@@ -941,7 +977,7 @@
     return fetchJson(url, opts, timeoutMs).then(function (r) { self.noteOk(); return r; }, function (e) { self.onRequestError(e); throw e; });
   };
   ServerBackend.prototype.noteOk = function () {
-    if (this.authStop) this.authStop = null; // serwer znów przyjmuje żądania (np. zalogowano się w innej karcie)
+    if (this.authStop) { this.authStop = null; clearTimeout(this.lockTimer); this.lockTimer = null; } // serwer znów przyjmuje żądania (np. zalogowano się w innej karcie)
     if (!this.online) this.setOnline(true);
     // serwer odpowiada, a połączenie na żywo leży — połącz od razu, nie czekając na kolejną próbę
     if (this.started && !this.paused && (!this.es || this.es.readyState === 2)) this.connect();

@@ -327,8 +327,9 @@
   .period-tabs button{ border:none; background:transparent; padding:8px 13px; border-radius:7px; font-size:12.5px; font-weight:600; color:var(--text-dim); cursor:pointer; }
   .period-tabs button.active{ background:var(--panel); color:var(--accent-strong); box-shadow:0 0 0 1px var(--border); }
   .stats-grid-2{ grid-template-columns:1.3fr 1fr; }
-  /* two charts side by side only where the narrower one still gets ~400 px (bar labels stay full size) */
-  @media (max-width:1200px){ .stats-grid-2{ grid-template-columns:1fr; } }
+  .stats-grid-2.wide-right{ grid-template-columns:1fr 1.3fr; }
+  /* two charts side by side only above 1200 px (charts are drawn at their panel's real width) */
+  @media (max-width:1200px){ .stats-grid-2, .stats-grid-2.wide-right{ grid-template-columns:1fr; } }
   .chart-legend{ display:flex; gap:16px; margin-bottom:10px; flex-wrap:wrap; }
   .chart-legend .item{ display:flex; align-items:center; gap:6px; font-size:13.5px; color:var(--text-dim); }
   .chart-legend .dot{ width:9px; height:9px; border-radius:3px; }
@@ -773,11 +774,13 @@ function buildDocketMap(){
   for(const t of transactions) map[t.id] = hasValidNr(t) ? t.nr : legacy[t.id];
   return map;
 }
+const DOCKET_MAX = 9999999;
+const saneNum = (n)=> (Number.isSafeInteger(n) && n>=0 && n<=1e12) ? n : 0;   // guards against absurd values (a number from a file is at most DOCKET_MAX)
 function nextDocketNumber(typ, stored){
   const key = typ==='wydanie' ? 'wz' : 'pz';
   const map = buildDocketMap();
-  let max = Math.max((counters && counters[key]) || 0, (stored && stored[key]) || 0);
-  for(const t of transactions){ if(t.typ===typ) max = Math.max(max, docketNum(map[t.id])); }
+  let max = Math.max(saneNum((counters && counters[key]) || 0), saneNum((stored && stored[key]) || 0));
+  for(const t of transactions){ if(t.typ===typ) max = Math.max(max, saneNum(docketNum(map[t.id]))); }
   return max+1;
 }
 // One device at a time hands out WZ/PZ numbers: a short cooperative lease on meta/numeracja (where
@@ -875,7 +878,12 @@ async function migrateDockets(){
       const target = {wz: Math.max(now.data.wz||0, cur.data.wz||0, maxOf('WZ')), pz: Math.max(now.data.pz||0, cur.data.pz||0, maxOf('PZ'))};
       if(!now.exists || now.data.wz!==target.wz || now.data.pz!==target.pz) await writeCounters(now, target);
     });
-  }catch(e){ console.error(e); /* view-only viewers can't write; numbers still display from the computed fallback */ }
+  }catch(e){
+    // no connection / numbering busy (e.g. the server restarting): try again on the next update;
+    // view-only viewers can't write — numbers still display from the computed fallback
+    if(e && (e.code==='unavailable' || e.code==='busy')){ docketMigrationDone = false; console.warn('numeracja: ponowię później —', e.message); }
+    else console.error(e);
+  }
   if(migrating){ migrating = false; mergeTransactions(); render(true); }
 }
 
@@ -1002,6 +1010,7 @@ async function loadOlderTransactions(boundary, background){
     let b = boundary, exhausted = false;
     for(let guard=0; guard<500; guard++){
       const snap = await db.collection('transactions').where('data','<=',b).orderBy('data','desc').limit(TX_WINDOW).get();
+      if(token!==olderLoadToken) return;   // a newer load has started: this one stops reading
       let added = 0;
       snap.docs.forEach(d=>{ if(!fetched.has(d.id)){ fetched.set(d.id, {id:d.id, ...d.data()}); added++; } });
       if(snap.docs.length<TX_WINDOW){ exhausted = true; break; }
@@ -1185,6 +1194,7 @@ function render(fromData){
   // a control without an id is found again by its tag and data-* attributes
   const focusSel = (!focusId && active && active!==main && main.contains(active) && active.dataset && Object.keys(active.dataset).length)
     ? active.tagName.toLowerCase() + Object.entries(active.dataset).map(([k,v])=>`[data-${k.replace(/[A-Z]/g,m=>'-'+m.toLowerCase())}="${CSS.escape(v)}"]`).join('') : null;
+  let focusIdx = 0; if(focusSel){ try{ focusIdx = Math.max(0, [...main.querySelectorAll(focusSel)].indexOf(active)); }catch(e){ focusIdx = 0; } }
 
   if(fromData && currentView==='new' && document.getElementById('opForm')){ refreshOpFormCouriers(); return; }
   if(currentView==='dashboard') main.innerHTML = viewDashboard();
@@ -1196,7 +1206,7 @@ function render(fromData){
   else if(currentView==='settings') main.innerHTML = viewSettings();
   bindViewEvents();
 
-  fitHBars(main);
+  fitCharts(main);
   if(focusId){
     const el = document.getElementById(focusId);
     if(el){
@@ -1204,7 +1214,7 @@ function render(fromData){
       if(selStart!==null){ try{ el.setSelectionRange(selStart, selEnd); }catch(e){} }
     }
   } else if(focusSel){
-    let el = null; try{ el = main.querySelector(focusSel); }catch(e){ el = null; }
+    let el = null; try{ const all = main.querySelectorAll(focusSel); el = all[focusIdx] || all[0] || null; }catch(e){ el = null; }
     if(el && el.offsetParent!==null) el.focus({preventScroll:true});
   }
 }
@@ -1524,9 +1534,9 @@ function svgBarChartGrouped(labels, seriesA, seriesB, colorA, colorB, opts={}){
     const cx = padL + groupW*i + groupW/2; const ah=(seriesA[i]/max)*innerH; const bh=(seriesB[i]/max)*innerH;
     bars += `<rect x="${cx-barW-2}" y="${padT+innerH-ah}" width="${barW}" height="${ah}" rx="2" fill="${colorA}"><title>${lab} · ${nameA}: ${num(seriesA[i])}</title></rect>`;
     bars += `<rect x="${cx+2}" y="${padT+innerH-bh}" width="${barW}" height="${bh}" rx="2" fill="${colorB}"><title>${lab} · ${nameB}: ${num(seriesB[i])}</title></rect>`;
-    if(n<=maxLabels || i%Math.ceil(n/maxLabels)===0) xLabels += `<text x="${cx}" y="${h-7}" font-size="12" font-weight="600" text-anchor="middle" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${lab}</text>`;
+    if(n<=maxLabels || i%Math.ceil(n/maxLabels)===0) xLabels += xAxisLabel(cx, h-7, lab, w);
   });
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img">${gridLines}${bars}${xLabels}</svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img" ${chartAttr(wd=>svgBarChartGrouped(labels, seriesA, seriesB, colorA, colorB, {...opts, width:wd}))}>${gridLines}${bars}${xLabels}</svg>`;
 }
 function svgLineChart(labels, series, color, opts={}){
   const rawMax = Math.max(...series, 0), rawMin = Math.min(...series, 0);
@@ -1547,8 +1557,8 @@ function svgLineChart(labels, series, color, opts={}){
     gridLines += `<line x1="${padL}" y1="${y}" x2="${w-padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
     gridLines += `<text x="${padL-6}" y="${y+4}" font-size="12.5" font-weight="600" text-anchor="end" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${num(v)}</text>`;
   }
-  labels.forEach((lab,i)=>{ if(n<=maxLabels || i%Math.ceil(n/maxLabels)===0) xLabels += `<text x="${pts[i][0]}" y="${h-7}" font-size="12" font-weight="600" text-anchor="middle" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${lab}</text>`; });
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img">
+  labels.forEach((lab,i)=>{ if(n<=maxLabels || i%Math.ceil(n/maxLabels)===0) xLabels += xAxisLabel(pts[i][0], h-7, lab, w); });
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img" ${chartAttr(wd=>svgLineChart(labels, series, color, {...opts, width:wd}))}>
     ${gridLines}
     <line x1="${padL}" y1="${zeroY}" x2="${w-padR}" y2="${zeroY}" stroke="var(--text-faint)" stroke-width="1" stroke-dasharray="3 3"/>
     <path d="${area}" fill="${color}" opacity="0.14"/>
@@ -1583,32 +1593,50 @@ function fitLabel(text, avail){
   while(n>1 && labelWidth(shortLabel(g, n)) > avail) n--;
   return shortLabel(g, n);
 }
-// Bar charts are drawn again at the real width of their panel once it is on screen (scale 1: 13px labels
-// stay 13px and the measured widths match what is drawn); a label still sticking out is shortened more.
-let hbarCharts = [];
-function fitHBars(root){
-  const list = hbarCharts; hbarCharts = [];
+// Charts are drawn again at the real width of their panel once it is on screen (scale 1: 13px labels stay
+// 13px and measured widths match what is drawn); a bar label still sticking out is shortened more.
+// Each chart function registers how to draw itself at another width.
+let chartDraws = [];
+function chartAttr(draw){ return `data-chart="${chartDraws.push(draw) - 1}"`; }
+function fitCharts(root){
+  const list = chartDraws; chartDraws = [];
   if(!root) return;
-  root.querySelectorAll('svg[data-hbar]').forEach(svg=>{
-    const c = list[+svg.dataset.hbar]; if(!c) return;
-    let el = svg;
+  root.querySelectorAll('svg[data-chart]').forEach(svg=>{
+    const draw = list[+svg.dataset.chart]; if(!draw) return;
     const real = Math.round(svg.getBoundingClientRect().width);
+    if(!real) return;   // not laid out (hidden): leave it as it is
+    let el = svg;
     if(real >= 200 && Math.abs(real - svg.viewBox.baseVal.width) > 2){
-      const tmp = document.createElement('div'); tmp.innerHTML = svgHBar(c.items, {...c.opts, width: real}); hbarCharts = [];
+      const tmp = document.createElement('div'); tmp.innerHTML = draw(real); chartDraws = [];
       el = tmp.firstElementChild; svg.replaceWith(el);
     }
     el.querySelectorAll('text[data-full]').forEach(t=>{
       const g = graphemes(t.dataset.full); let n = graphemes(t.textContent).length;
-      try{ while(n>1 && t.getBBox().x < 1){ n--; t.textContent = shortLabel(g, n); } }catch(e){}
+      try{ let b; while(n>1 && (b = t.getBBox()).width > 0 && b.x < 1){ n--; t.textContent = shortLabel(g, n); } }catch(e){}
     });
   });
 }
-if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(db && currentView==='stats') render(); });
+if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(db && (currentView==='stats' || currentView==='courierDetail')) render(true); });
+// width of a value label (12.5px IBM Plex Mono, semibold)
+function valueWidth(text){
+  try{
+    labelCanvas = labelCanvas || document.createElement('canvas').getContext('2d');
+    labelCanvas.font = '600 12.5px "IBM Plex Mono", monospace';
+    return labelCanvas.measureText(text).width;
+  }catch(e){ return String(text).length*7.6; }
+}
+// x-axis label: the last ones are anchored so they don't run past the right edge
+function xAxisLabel(x, y, lab, w){
+  const half = valueWidth(String(lab))/2;
+  const anchor = x + half > w - 2 ? 'end' : 'middle', ax = anchor==='end' ? w - 2 : x;
+  return `<text x="${ax}" y="${y}" font-size="12" font-weight="600" text-anchor="${anchor}" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${lab}</text>`;
+}
 function svgHBar(items, opts={}){
-  // first guess before layout (fitHBars then uses the panel's real width): in the two-column statistics
+  // first guess before layout (fitCharts then uses the panel's real width): in the two-column statistics
   // layout the panel is less than half the content width
-  const w = opts.width || (window.innerWidth > 1200 ? 460 : chartWidth()), rowH=32, padR=Math.round(Math.min(58, Math.max(38, w*0.13))), padT=6;
-  const idx = hbarCharts.push({items, opts}) - 1;
+  const w = opts.width || (window.innerWidth > 1200 ? 460 : chartWidth()), rowH=32, padT=6;
+  // room on the right for the widest value (12 530 must not be cut)
+  const padR = Math.round(Math.max(38, 8 + 4 + Math.max(0, ...items.map(it=>valueWidth(num(it.value))))));
   const longest = Math.max(0, ...items.map(it=>labelWidth(String(it.label))));
   const padL = Math.round(Math.min(w*0.42, Math.max(76, longest + 18)));
   const h = padT*2 + rowH*items.length;
@@ -1624,7 +1652,7 @@ function svgHBar(items, opts={}){
       <text x="${padL+barW+8}" y="${y+rowH/2+4.5}" font-size="12.5" font-weight="600" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${num(it.value)}</text></g>
     `;
   });
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img" data-hbar="${idx}">${rows}</svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img" ${chartAttr(wd=>svgHBar(items, {...opts, width:wd}))}>${rows}</svg>`;
 }
 
 
@@ -1893,7 +1921,7 @@ function viewStats(){
       </div>
     </div>
 
-    <div class="grid stats-grid-2">
+    <div class="grid stats-grid-2 wide-right">
       <div class="panel">
         <div class="panel-title"><h2>Rozkład wg dnia tygodnia</h2><span class="hint">średnio szt. wydanych w dniu z wydaniami</span></div>
         ${svgHBar(WEEKDAYS_PL_SHORT.map((l,i)=>({label:l, value:Math.round(wdAvg[i]*10)/10, color:'var(--info)'})))}
@@ -2344,7 +2372,8 @@ function parseBackup(text){
   j.transactions.forEach(t=>{
     if(!(t && typeof t.id==='string' && ID.test(t.id) && (t.typ==='wydanie'||t.typ==='zwrot') && Number.isInteger(t.ilosc) && t.ilosc>0 && typeof t.data==='string' && /^\d{4}-\d{2}-\d{2}$/.test(t.data) && typeof t.kurierId==='string' && ID.test(t.kurierId))){ out.skipped++; return; }
     const d = {kurierId:t.kurierId, kurierNazwa:String(t.kurierNazwa||'').slice(0,60), typ:t.typ, ilosc:t.ilosc, data:t.data, uwagi:String(t.uwagi||'').slice(0,500), createdAt: Number.isFinite(t.createdAt)? t.createdAt : (Date.parse(t.data)||0)};
-    if(typeof t.nr==='string' && /^(WZ|PZ)-\d+$/.test(t.nr)) d.nr = t.nr;
+    // a number from the file is kept only when it fits (right kind, sane size); otherwise it gets a new one
+    if(typeof t.nr==='string' && /^(WZ|PZ)-\d{1,7}$/.test(t.nr) && t.nr.startsWith(docketPrefix(t.typ)) && docketNum(t.nr)>0) d.nr = padNr(t.typ, docketNum(t.nr));
     if(d.nr && Number.isFinite(t.nrAt)) d.nrAt = t.nrAt;
     if(t.twinOk===true) d.twinOk = true;
     if(t.numerListu) d.numerListu = String(t.numerListu).slice(0,100);
@@ -2379,10 +2408,14 @@ function planMerge(parsed){
   });
   const renumber = parsed.transactions.filter(t=> !txIds.has(t.id) && t.data.nr && usedNr.has(t.data.nr) && usedNr.get(t.data.nr)!==t.id).map(t=>t.id);
   // the same number on two new operations of the file: the later one (by creation time) gets a new number
+  const taken = renumber.length;
   const inFile = new Set();
+  let dupInFile = 0;
   parsed.transactions.filter(t=> !txIds.has(t.id) && t.data.nr).sort((a,b)=>(a.data.createdAt||0)-(b.data.createdAt||0))
-    .forEach(t=>{ if(inFile.has(t.data.nr)){ if(!renumber.includes(t.id)) renumber.push(t.id); } else inFile.add(t.data.nr); });
-  return {fills, differ, renumber};
+    .forEach(t=>{ if(inFile.has(t.data.nr)){ if(!renumber.includes(t.id)){ renumber.push(t.id); dupInFile++; } } else inFile.add(t.data.nr); });
+  // operations from old copies without a number get one during the import as well
+  const noNr = parsed.transactions.filter(t=> !txIds.has(t.id) && !hasValidNr(t.data)).length;
+  return {fills, differ, renumber, taken, dupInFile, noNr};
 }
 // a default courier only auto-created on first start and never changed in any way
 function isUntouchedDefault(c){
@@ -2407,10 +2440,13 @@ async function importBackupFile(file){
     <div class="modal-sub">Plik${when && !isNaN(when) ? ` z ${when.toLocaleDateString('pl-PL')} ${when.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})}` : ''}: kurierzy ${num(parsed.couriers.length)}, ${opsLabel(parsed.transactions.length)}${dates.length ? ` (${fmtDate(dates[0])} – ${fmtDate(dates[dates.length-1])})` : ''}.${parsed.skipped ? ` Pominięto uszkodzone wpisy: ${num(parsed.skipped)}.` : ''}<br>Teraz w aplikacji: kurierzy ${num(couriers.length)}, ${opsLabel(transactions.length)}; te same operacje w obu: ${num(common)}.</div>
     <div style="display:flex; flex-direction:column; gap:10px;">
       <label class="import-opt"><input type="radio" name="importMode" value="merge" ${fresh ? '' : 'checked'}><span><b>Połącz</b> — dodaj z pliku tylko to, czego tu brakuje. Nic nie zostanie usunięte ani nadpisane.${
-        (plan.fills.length || plan.differ.length || plan.renumber.length) ? `<span style="display:block; margin-top:6px; font-size:12.5px;">${[
+        (plan.fills.length || plan.differ.length || plan.renumber.length || plan.noNr) ? `<span style="display:block; margin-top:6px; font-size:12.5px;">${[
           plan.fills.length ? `Uzupełnione z pliku (tu brak): ${plan.fills.map(f=>escapeHtml(f.name)).join(', ')} — stan początkowy lub logo.` : '',
           plan.differ.length ? `Zostaną tutejsze ustawienia: ${plan.differ.map(d=>`${escapeHtml(d.name)} (${d.diffs.map(escapeHtml).join(', ')})`).join('; ')}.` : '',
-          plan.renumber.length ? `<b style="color:var(--bad);">${opsLabel(plan.renumber.length)} z pliku ${plForm(plan.renumber.length,'ma numer dokumentu zajęty','mają numery dokumentów zajęte','ma numery dokumentów zajęte')} tutaj przez inne operacje — ${plForm(plan.renumber.length,'dostanie nowy numer','dostaną nowe numery','dostanie nowe numery')}.</b> Przy przenoszeniu z wersji online wybierz raczej „Zastąp wszystko”.` : '',
+          (plan.renumber.length + plan.noNr) ? (()=>{ const total = plan.renumber.length + plan.noNr;
+            const why = [plan.taken ? `numer zajęty tutaj przez inną operację: ${num(plan.taken)}` : '', plan.dupInFile ? `ten sam numer dwa razy w pliku: ${num(plan.dupInFile)}` : '', plan.noNr ? `bez numeru (starsza kopia): ${num(plan.noNr)}` : ''].filter(Boolean).join(', ');
+            const txt = `${opsLabel(total)} z pliku ${plForm(total,'dostanie nowy numer dokumentu','dostaną nowe numery dokumentów','dostanie nowe numery dokumentów')} (${why}).`;
+            return plan.taken ? `<b style="color:var(--bad);">${txt}</b> Przy przenoszeniu z wersji online wybierz raczej „Zastąp wszystko”.` : txt; })() : '',
         ].filter(Boolean).join('<br>')}</span>` : ''}</span></label>
       <label class="import-opt"><input type="radio" name="importMode" value="replace" ${fresh ? 'checked' : ''}><span><b>Zastąp wszystko</b> — usuń obecnych kurierów i operacje i odtwórz dokładnie stan z pliku.</span></label>
     </div>
@@ -2429,6 +2465,7 @@ async function importBackupFile(file){
 }
 
 async function runImport(parsed, mode){
+  if(movingOps){ toast('Trwa przenoszenie operacji — spróbuj za chwilę', true); return; }
   const info = runtimeInfo();
   const txById = new Map(transactions.map(t=>[t.id,t])), cById = new Map(couriers.map(c=>[c.id,c]));
   // a default courier that was only auto-created (never renamed, used, given a logo or an opening
@@ -2462,9 +2499,11 @@ async function runImport(parsed, mode){
   // the file whose number is taken here get the next numbers, saved together with them below.
   const newNr = new Map();
   const addIds = new Set(addT.map(t=>t.id));
-  // highest numbers known here before waiting for the numbering lease
-  const seenTop = {wydanie:(counters&&counters.wz)||0, zwrot:(counters&&counters.pz)||0};
-  { const map = buildDocketMap(); transactions.forEach(t=>{ const n = docketNum(map[t.id]); if(n > (seenTop[t.typ]||0)) seenTop[t.typ] = n; }); }
+  // highest numbers of operations held here before waiting for the numbering lease (not the counter: a number
+  // handed out elsewhere whose operation has not arrived yet must count as taken)
+  const seenTop = {wydanie:0, zwrot:0};
+  { const map = buildDocketMap(); transactions.forEach(t=>{ const n = saneNum(docketNum(map[t.id])); if(n > (seenTop[t.typ]||0)) seenTop[t.typ] = n; }); }
+  const skipIds = new Set();   // file operations that turned out to be in the database already (merge adds only what is missing)
   let reserved = null;
   try{
     await withNumberingLock(async ()=>{
@@ -2473,22 +2512,35 @@ async function runImport(parsed, mode){
         // while this step waited for the lease, another device may have saved operations: check the file's
         // numbers against the local copy again, and treat numbers handed out meanwhile (not saved here yet)
         // as taken; operations from old copies without a number get theirs here as well, in date order
+        const here = new Set(transactions.map(t=>t.id));
+        addIds.forEach(id=>{ if(here.has(id)) skipIds.add(id); });   // arrived meanwhile (e.g. the same file on another device)
         planMerge(parsed).renumber.forEach(id=>renumberSet.add(id));
         parsed.transactions.forEach(t=>{
-          if(!addIds.has(t.id)) return;
+          if(!addIds.has(t.id) || skipIds.has(t.id)) return;
           if(!hasValidNr(t.data)){ renumberSet.add(t.id); return; }
           const n = docketNum(t.data.nr), k = t.data.typ==='wydanie' ? 'wz' : 'pz';
-          if(n > (seenTop[t.data.typ]||0) && n <= (cur.data[k]||0)) renumberSet.add(t.id);
+          if(n > (seenTop[t.data.typ]||0) && n <= saneNum(cur.data[k]||0)) renumberSet.add(t.id);
         });
+        // the local copy can lag behind the database: an operation that is already stored there under the
+        // same id is the same operation — it is left as it is, not given a new number
+        const fileById = new Map(parsed.transactions.map(t=>[t.id, t]));
+        const ask = [...renumberSet].filter(id=>addIds.has(id) && !skipIds.has(id) && fileById.has(id) && hasValidNr(fileById.get(id).data));
+        if(ask.length && ask.length <= 50){
+          for(let i=0; i<ask.length; i+=5){
+            const got = await Promise.all(ask.slice(i, i+5).map(id=>db.collection('transactions').doc(id).get().then(sn=>sn.exists ? id : null, ()=>null)));
+            got.forEach(id=>{ if(id){ skipIds.add(id); renumberSet.delete(id); } });
+          }
+        }
+        skipIds.forEach(id=>renumberSet.delete(id));
       }
       const top = {
-        wydanie: Math.max(cur.data.wz||0, (counters&&counters.wz)||0, Number(parsed.counters.wz)||0),
-        zwrot: Math.max(cur.data.pz||0, (counters&&counters.pz)||0, Number(parsed.counters.pz)||0),
+        wydanie: Math.max(saneNum(cur.data.wz||0), saneNum((counters&&counters.wz)||0), saneNum(Number(parsed.counters.wz)||0)),
+        zwrot: Math.max(saneNum(cur.data.pz||0), saneNum((counters&&counters.pz)||0), saneNum(Number(parsed.counters.pz)||0)),
       };
-      const bump = (typ, n)=>{ if(n > (top[typ]||0)) top[typ] = n; };
+      const bump = (typ, n)=>{ n = saneNum(n); if(n > (top[typ]||0)) top[typ] = n; };
       parsed.transactions.forEach(t=>{ if(!renumberSet.has(t.id) && hasValidNr(t.data)) bump(t.data.typ, docketNum(t.data.nr)); });
       if(mode==='merge'){ const map = buildDocketMap(); transactions.forEach(t=> bump(t.typ, docketNum(map[t.id]))); }
-      parsed.transactions.filter(t=>renumberSet.has(t.id)).sort((a,b)=>(a.data.createdAt||0)-(b.data.createdAt||0))
+      parsed.transactions.filter(t=>renumberSet.has(t.id) && !skipIds.has(t.id)).sort((a,b)=>(a.data.createdAt||0)-(b.data.createdAt||0))
         .forEach(t=>{ top[t.data.typ] += 1; newNr.set(t.id, padNr(t.data.typ, top[t.data.typ])); });
       const target = {wz: top.wydanie, pz: top.zwrot};
       if(!cur.exists || cur.data.wz!==target.wz || cur.data.pz!==target.pz){
@@ -2497,8 +2549,9 @@ async function runImport(parsed, mode){
       }
     });
   }catch(e){
-    console.error(e); importRunning = false; bulkWriting = false; closeModal();
-    mergeTransactions(); render(); migrateDockets();   // live updates that arrived while waiting were held back
+    console.error(e); importRunning = false; bulkWriting = movingOps;
+    if(document.getElementById('importProgress')) closeModal();
+    mergeTransactions(); render(true); migrateDockets();   // live updates that arrived while waiting were held back
     toast(e && e.code==='busy' ? 'Numeracja dokumentów jest zajęta na innym urządzeniu — nic nie zapisano, spróbuj ponownie.' : 'Nie udało się przygotować numerów dokumentów — nic nie zapisano. Spróbuj ponownie.', true);
     return;
   }
@@ -2523,7 +2576,8 @@ async function runImport(parsed, mode){
   }
   // a number already used here by another operation is replaced by the one reserved above
   const nrAt = Date.now();
-  addT.forEach(t=>{ const d = {...t.data}; if(newNr.has(t.id)){ d.nr = newNr.get(t.id); d.nrAt = nrAt; } writes.push({op:'set', coll:'transactions', id:t.id, data:d}); });
+  const addList = addT.filter(t=>!skipIds.has(t.id));
+  addList.forEach(t=>{ const d = {...t.data}; if(newNr.has(t.id)){ d.nr = newNr.get(t.id); d.nrAt = nrAt; } writes.push({op:'set', coll:'transactions', id:t.id, data:d}); });
   let done = 0, failed = 0; const queue = writes.slice();
   const progress = ()=>{ const el = document.getElementById('importProgress'), bar = document.getElementById('importBar'); if(el) el.textContent = `Zapisano ${num(done)} z ${num(writes.length)}…`; if(bar) bar.style.width = (writes.length ? done/writes.length*100 : 100).toFixed(1)+'%'; };
   const worker = async ()=>{
@@ -2548,16 +2602,17 @@ async function runImport(parsed, mode){
   } else {
     await Promise.all(Array.from({length: Math.min(6, Math.max(1, writes.length))}, worker));
   }
+  let settingsFailed = false;
   try{
     if(!(settings && settings.seeded)){ await db.doc('meta/settings').set({...(settings||{}), seeded:true}); }
-  }catch(e){ failed++; console.error(e); }
+  }catch(e){ settingsFailed = true; console.error(e); }
   // nothing was written: give the reserved numbers back (unless someone has taken a later one meanwhile)
-  if(reserved && failed >= writes.length){
+  if(reserved && writes.length && failed >= writes.length){
     try{ await withNumberingLock(async ()=>{ const cur = await readCounters(); if(cur.data.wz===reserved.target.wz && cur.data.pz===reserved.target.pz) await writeCounters(cur, reserved.before); }); }
     catch(e){ console.warn('release', e); }
   }
   const renumbered = failed ? 0 : newNr.size;
-  couriersSeeded = true; importRunning = false; bulkWriting = false; docketMigrationDone = false;
+  couriersSeeded = true; docketMigrationDone = false;
   // imported operations older than the live window are not delivered by the subscription — reload that part
   olderTx.clear(); olderBoundary = null;
   if(liveTx.length >= TX_WINDOW){ olderBoundary = liveTx[liveTx.length-1].data; historyComplete = false; await loadOlderTransactions(olderBoundary); }
@@ -2565,14 +2620,18 @@ async function runImport(parsed, mode){
   // the live update of the imported data can restart that load (new boundary) — wait for it, so the
   // totals are already complete when the import reports success
   for(let i=0; i<150 && !historyComplete; i++) await new Promise(r=>setTimeout(r, 100));
-  closeModal(); mergeTransactions(); render();
+  importRunning = false; bulkWriting = movingOps;
+  // only this import's own window is closed; the operation form keeps what was typed into it
+  if(document.getElementById('importProgress')) closeModal();
+  mergeTransactions(); render(true);
   // numbers for operations saved without one (old copies) are given from a local copy that already
   // holds every imported operation — otherwise the next live update does it (a stale copy could hand
   // out a number an imported operation already has)
   { const have = new Set(transactions.map(t=>t.id)); const gone = writes.filter(w=>w.op==='delete' && w.coll==='transactions').map(w=>w.id);
-    if(addT.every(t=>have.has(t.id)) && !gone.some(id=>have.has(id))) migrateDockets(); }
+    if(addList.every(t=>have.has(t.id)) && !gone.some(id=>have.has(id))) migrateDockets(); }
   if(failed) toast(`Wczytano z błędami: nie zapisano ${num(failed)} z ${num(writes.length)} wpisów. Spróbuj ponownie (tryb „Połącz” uzupełni braki).`, true);
-  else toast(`Wczytano kopię: kurierzy ${num(addC.length)}, ${opsLabel(addT.length)}${mode==='replace' && writes.some(w=>w.op==='delete') ? `, usunięto ${num(writes.filter(w=>w.op==='delete').length)}` : ''}${plan.fills.length ? `, uzupełniono dane kurierów: ${num(plan.fills.length)}` : ''}${renumbered ? `, nowe numery dokumentów: ${num(renumbered)}` : ''}${plan.differ.length ? `; tutejsze ustawienia zachowane u: ${plan.differ.map(d=>d.name).join(', ')}` : ''}.`);
+  else if(settingsFailed) toast('Wczytano kopię, ale nie udało się zapisać ustawień — odśwież stronę i sprawdź listę kurierów.', true);
+  else toast(`Wczytano kopię: kurierzy ${num(addC.length)}, ${opsLabel(addList.length)}${mode==='replace' && writes.some(w=>w.op==='delete') ? `, usunięto ${num(writes.filter(w=>w.op==='delete').length)}` : ''}${plan.fills.length ? `, uzupełniono dane kurierów: ${num(plan.fills.length)}` : ''}${renumbered ? `, nowe numery dokumentów: ${num(renumbered)}` : ''}${plan.differ.length ? `; tutejsze ustawienia zachowane u: ${plan.differ.map(d=>d.name).join(', ')}` : ''}.`);
 }
 
 async function handleIssueAction(btn){
@@ -2600,7 +2659,7 @@ async function handleIssueAction(btn){
   }
   else if(act==='restore-courier'){
     if(!historyComplete){ toast('Trwa wczytywanie historii — spróbuj za chwilę', true); return; }
-    if(movingOps) return;
+    if(movingOps || importRunning) return;
     const name = String(btn.dataset.name||id).trim().replace(/\s+/g,' ').slice(0,60);
     // a courier with this name was added again meanwhile: a second one with the same name would split
     // the history between two identical cards — move the operations to the existing one instead
@@ -2640,25 +2699,24 @@ async function moveOperations(ops, target){
   const patch = {kurierId:target.id, kurierNazwa:target.name};
   let moved = 0, failed = 0, done = 0;
   const progress = ()=>{ const el = document.getElementById('moveProgress'), bar = document.getElementById('moveBar'); if(el) el.textContent = `Przeniesiono ${num(done)} z ${num(ops.length)}…`; if(bar) bar.style.width = (ops.length ? done/ops.length*100 : 100).toFixed(1)+'%'; };
-  const local = (list)=>{ list.forEach(t=>applyLocalTx(t.id, {...t, ...patch})); noteLocalWrite(); };   // older-history reloads restart with the change
+  const local = (list)=>{ list.forEach(t=>applyLocalTx(t.id, {...t, ...patch})); };
+  const one = async (t)=>{ try{ await db.collection('transactions').doc(t.id).update(patch); local([t]); moved++; } catch(e){ failed++; console.error('move', t.id, e); } done++; };
   try{
     if(typeof db.batch==='function'){
       for(let i=0; i<ops.length; i+=400){
         const chunk = ops.slice(i, i+400);
-        try{ const b = db.batch(); chunk.forEach(t=>b.update(db.collection('transactions').doc(t.id), patch)); await b.commit(); local(chunk); moved += chunk.length; }
-        catch(e){ failed += chunk.length; console.error('move batch', e); }
-        done += chunk.length; progress();
+        try{ const b = db.batch(); chunk.forEach(t=>b.update(db.collection('transactions').doc(t.id), patch)); await b.commit(); local(chunk); moved += chunk.length; done += chunk.length; }
+        catch(e){ console.warn('move batch', e); for(const t of chunk) await one(t); }   // e.g. one of them deleted elsewhere: the rest still moves
+        noteLocalWrite(); progress();
       }
     } else {
-      for(const t of ops){
-        try{ await db.collection('transactions').doc(t.id).update(patch); local([t]); moved++; }
-        catch(e){ failed++; console.error('move', t.id, e); }
-        done++; if(done%5===0 || done===ops.length) progress();
-      }
+      for(const t of ops){ await one(t); if(done%5===0 || done===ops.length) progress(); if(done%50===0) noteLocalWrite(); }
+      noteLocalWrite();
     }
   } finally {
-    movingOps = false; bulkWriting = false;
-    closeModal(); mergeTransactions(); render();
+    movingOps = false; bulkWriting = importRunning;
+    if(document.getElementById('moveProgress')) closeModal();
+    mergeTransactions(); render(true);
   }
   if(failed) toast(`Przeniesiono ${opsAcc(moved)}, nie udało się przenieść ${num(failed)} — spróbuj ponownie.`, true);
   else toast(`Przeniesiono ${opsAcc(moved)} do kuriera „${target.name}”`);
@@ -2725,7 +2783,8 @@ function restoreFocus(d){
   if(t && typeof t.focus==='function' && t.offsetParent!==null){ t.focus({preventScroll:true}); return; }
   focusHeading();
 }
-function dismissModal(){ if(importRunning) return; const h = modalCancelHook; if(h){ modalCancelHook = null; h(); } else closeModal(); }
+// progress windows (import, moving operations) can't be dismissed while they run
+function dismissModal(){ if(importRunning || movingOps) return; const h = modalCancelHook; if(h){ modalCancelHook = null; h(); } else closeModal(); }
 document.addEventListener('keydown', (e)=>{
   if(e.key!=='Escape') return;
   if(document.getElementById('printRoot').innerHTML){ closePrint(); return; }
@@ -3136,7 +3195,7 @@ async function saveTransaction(form){
   }catch(e){
     console.error(e);
     if(allocated && !(e && e.code==='unique')) releaseDocket(allocated);
-    toast(e && e.code==='busy' ? e.message : 'Nie udało się zapisać operacji'+(e && e.code==='unavailable' ? ' — brak połączenia z bazą' : ''), true);
+    toast(e && e.code==='busy' ? e.message : e && e.auth ? 'Nie zapisano operacji. '+e.message : 'Nie udało się zapisać operacji'+(e && e.code==='unavailable' ? ' — brak połączenia z bazą' : ''), true);
     return false;
   }
 }
@@ -3211,6 +3270,8 @@ function bindDateInput(input, apply){
   input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); if(commit() || pendingDataRender) setTimeout(rerender, 0); } else if(e.key!=='Tab' && e.key!=='Shift') typed = true; });
   input.addEventListener('change', ()=>{ if(!typed && commit()) setTimeout(rerender, 0); });   // never re-render from inside an input event
   input.addEventListener('blur', ()=>{
+    // switching windows or tabs blurs the field while it stays focused (maybe half-typed): not leaving it
+    if(document.activeElement===input) return;
     const changed = commit();
     if(!changed && !pendingDataRender) return;
     afterPointer(()=>{
@@ -3243,8 +3304,7 @@ function checkDayChange(){
     } else {
       // a form filled in yesterday keeps its date; saving it is stopped once, so the date gets checked
       d.dataset.dayWarn = prev;
-      const h = document.getElementById('opDateHint');
-      if(h){ h.textContent = `Formularz otwarto ${fmtDate(prev)}, a jest już ${fmtDate(now)} — sprawdź datę operacji.`; h.hidden = false; }
+      afterPointer(()=>{ const h = document.getElementById('opDateHint'); if(h && d.isConnected && !d.dataset.touched){ h.textContent = `Formularz otwarto ${fmtDate(prev)}, a jest już ${fmtDate(now)} — sprawdź datę operacji.`; h.hidden = false; } });
     }
   }
   if(db) afterPointer(()=>render(true));   // "today" figures and limits; never between mousedown and mouseup
@@ -3415,10 +3475,17 @@ function bindViewEvents(){
 
 /* ---------------------------- BOOT ---------------------------- */
 let resizeT;
-window.addEventListener('resize', ()=>{
+const redrawCharts = ()=>{
   clearTimeout(resizeT);
-  resizeT = setTimeout(()=>{ if(currentView==='stats' || currentView==='courierDetail') render(); }, 180);
-});
+  resizeT = setTimeout(()=>{ if(currentView==='stats' || currentView==='courierDetail') render(true); }, 180);
+};
+window.addEventListener('resize', redrawCharts);
+// the content area can change width without a window resize (a hidden page shown again, a scrollbar):
+// charts are drawn for the real width, so they are drawn again
+if(typeof ResizeObserver==='function'){
+  let lastMainW = -1;   // -1: not measured yet, 0: hidden
+  new ResizeObserver((entries)=>{ const w = Math.round(entries[0].contentRect.width); if(w > 0 && lastMainW >= 0 && (lastMainW===0 || Math.abs(w - lastMainW) > 2)) redrawCharts(); lastMainW = w; }).observe(document.getElementById('main'));
+}
 render();
 initDb();
 </script>

@@ -1520,3 +1520,39 @@ test('(h4) usunięty kurier: Esc w pytaniu o przywrócenie niczego nie dodaje; �
     assert.deepEqual(A.bledy, []);
   } finally { await ctx.close(); }
 });
+
+test('(h5) blokada haseł (429) na serwerze: zalogowana karta działa dalej; karta bez sesji czeka do końca blokady i łączy się sama', { timeout: 120000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const srv = await uruchomSerwer({ dataDir: dane, env: { EP_HASLO: 'tajne', EP_BLOKADA_HASLA_MS: '4000' } });
+  const url = `http://127.0.0.1:${srv.port}/`;
+  const { zadanie } = require('./pomocnicy-serwera');
+  const zgaduj = async () => { for (let i = 0; i < 5; i++) await zadanie(srv.port, { path: '/api/ping', headers: { Authorization: `Basic ${Buffer.from(`x:zle${i}`).toString('base64')}` } }); };
+  const ctxA = await przegladarka.newContext({ httpCredentials: { username: 'biuro', password: 'tajne' } });
+  const ctxB = await przegladarka.newContext({ httpCredentials: { username: 'magazyn', password: 'tajne' } });
+  try {
+    const A = sledz(await ctxA.newPage(), 'H5-A');
+    await A.goto(url); await gotowa(A);
+    await zgaduj();   // ktoś inny z tego samego adresu wpisuje złe hasła → blokada 4 s
+    await dodajOperacje(A, { kurier: 'dpd', ilosc: 4 });
+    await czekajNaToast(A, /WZ-00001/);   // zalogowana karta (ciasteczko sesji) zapisuje w czasie blokady
+    await zgaduj();
+    const B = await ctxB.newPage();   // nowe urządzenie bez sesji trafia na blokadę
+    const r = await B.goto(url);
+    assert.equal(r.status(), 429);
+    assert.match(await B.textContent('body'), /Za dużo błędnych haseł/);
+    await B.waitForTimeout(4500);
+    await B.reload(); await gotowa(B);   // po blokadzie logowanie działa
+    await saldo(B, '4 szt.');
+    // otwarta karta bez ważnej sesji trafia na blokadę: pasek z godziną, a po blokadzie łączy się sama
+    await ctxB.clearCookies();
+    await B.waitForTimeout(4500);
+    await zgaduj();
+    await B.evaluate(() => window.claude.use('db').then((db) => db.collection('transactions').get()).catch(() => null));
+    const baner = await B.waitForSelector('[data-ep-banner="auth"]', { timeout: 10000 });
+    assert.match(await baner.textContent(), /wstrzymane do \d\d:\d\d:\d\d[\s\S]*połączy się ponownie sama/);
+    await B.waitForFunction(() => !document.querySelector('[data-ep-banner="auth"]') && window.EP_LOCAL.online === true, null, { timeout: 15000 });
+    await dodajOperacje(B, { kurier: 'dpd', ilosc: 2 });
+    await czekajNaToast(B, /WZ-00002/);
+    assert.deepEqual(A.bledy, []);
+  } finally { await ctxA.close(); await ctxB.close(); await srv.zatrzymaj(); }
+});

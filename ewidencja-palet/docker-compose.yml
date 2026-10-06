@@ -36,5 +36,6 @@ services:
       # odpowiada tylko pod adresem IP i nazwami lokalnymi (ochrona przed „DNS rebinding”). Dopisz domenę:
       # - EP_HOSTY=palety.twojanazwa.synology.me
       # Za odwrotnym serwerem proxy wszyscy łączą się z adresu proxy — żeby kilka pomyłek jednej osoby
-      # nie wstrzymywało logowania wszystkim, odkomentuj też (błędne hasła liczone osobno dla każdego):
-      # - EP_ZAUFANE_PROXY=1
+      # nie wstrzymywało logowania wszystkim, odkomentuj też i wpisz adres proxy, który serwer podaje
+      # w dzienniku („…ustaw EP_ZAUFANE_PROXY=…”); błędne hasła będą liczone osobno dla każdego:
+      # - EP_ZAUFANE_PROXY=172.17.0.1
