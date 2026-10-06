@@ -1396,11 +1396,15 @@ test('(h2) rozliczenie: odwrócony zakres dat to błąd (bez zamiany); „Zapisz
     await A.waitForSelector('#stRangeErr');
     assert.deepEqual(await A.evaluate(() => [stFrom, stTo]), [dzis, wczoraj], 'daty nie są zamieniane');
     assert.match(await A.textContent('#stRangeErr'), /jest późniejsza niż „do”/);
-    assert.ok(await A.isDisabled('[data-action="st-print"]'));
-    assert.ok(await A.isDisabled('[data-action="st-csv"]'));
+    assert.equal(await A.getAttribute('[data-action="st-print"]', 'aria-disabled'), 'true');
+    assert.equal(await A.getAttribute('[data-action="st-csv"]', 'aria-disabled'), 'true');
+    await A.click('[data-action="st-csv"]', { force: true });   // wygląda na wyłączony, ale klik daje komunikat
+    await czekajNaToast(A, /Popraw okres/, true);
+    // poprawienie daty i od razu klik w CSV (bez wychodzenia z pola): pierwszy klik działa
     await A.fill('#stTo', dzis);
-    await A.waitForFunction(() => !document.getElementById('stRangeErr') && document.querySelector('#statementPanel .kpi, .kpi'));
-    assert.ok(!(await A.isDisabled('[data-action="st-csv"]')));
+    const csv = await pobierz(A, '[data-action="st-csv"]');
+    assert.match(csv.nazwa, new RegExp(`${dzis}-${dzis}\\.csv$`));
+    assert.equal(await A.getAttribute('[data-action="st-csv"]', 'aria-disabled'), null);
     // usunięty kurier z operacjami: „Dodaj kuriera” z tą samą nazwą proponuje przywrócenie z historią
     const nazwa = await A.evaluate(() => courierById('dpd').name);
     await A.evaluate(() => deleteCourier('dpd'));
@@ -1444,4 +1448,75 @@ test('(h3) „Połącz” w trybie serwera: operacje z pliku z zajętymi numeram
     assert.match(await zapiszOp(A, { kurier: 'dpd', ilosc: 3 }), /WZ-00011/, 'kolejna operacja — następny numer, bez dziury');
     assert.deepEqual(A.bledy, []);
   } finally { await ctx.close(); await srv.zatrzymaj(); }
+});
+
+test('(h3b) „Połącz”: operacja zapisana na innym urządzeniu, gdy import czeka na numerację, nie dubluje numeru z pliku', { timeout: 120000 }, async () => {
+  const dane = tymczasowyKatalog(); sprzatanie.push(dane);
+  const srv = await uruchomSerwer({ dataDir: dane });
+  await zasiej(srv.port);
+  const op = (n, createdAt) => ({ kurierId: 'dpd', kurierNazwa: 'DPD', typ: 'wydanie', ilosc: n, data: '2026-10-01', uwagi: '', createdAt, nr: `WZ-0000${n}` });
+  await postJson(srv.port, '/api/batch', { writes: [
+    ...[1, 2, 3, 4, 5].map((n) => ({ op: 'set', coll: 'transactions', id: `loc${n}`, data: op(n, 1000 + n) })),
+    { op: 'set', coll: 'meta', id: 'counters', data: { wz: 5, pz: 0 } },
+  ] });
+  const tmp = tymczasowyKatalog('ep-kopia-'); sprzatanie.push(tmp);
+  const plik = path.join(tmp, 'siedem.json');   // druga lokalizacja ma już WZ-00001…WZ-00007
+  fs.writeFileSync(plik, JSON.stringify({ app: 'ewidencja-palet', format: 1, exportedAt: new Date().toISOString(),
+    couriers: [{ id: 'dpd', name: 'DPD', order: 1, color: '#DC0032', custom: false, enabled: true }],
+    transactions: [1, 2, 3, 4, 5, 6, 7].map((n) => ({ id: `rem${n}`, ...op(n, 5000 + n) })), meta: { counters: { wz: 7, pz: 0 } }, logos: {} }));
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'H3b-A'), B = sledz(await ctx.newPage(), 'H3b-B');
+    await A.goto(srv.url); await gotowa(A); await B.goto(srv.url); await gotowa(B);
+    await A.waitForTimeout(3000);   // dzierżawy numeracji z uruchomienia wygasają
+    await doUstawien(A); await A.setInputFiles('#backupFile', plik); await A.waitForSelector('#importGo');
+    await A.check('#modalRoot input[name="importMode"][value="merge"]');
+    assert.match(await zapiszOp(B, { kurier: 'dpd', ilosc: 51 }), /WZ-00006/);   // B trzyma teraz dzierżawę ~2,5 s
+    await A.waitForFunction(() => transactions.some((t) => t.nr === 'WZ-00006'));
+    // A klika „Wczytaj” i czeka na dzierżawę; B w tym czasie zapisuje kolejną operację
+    const [, drugi] = await Promise.all([A.click('#importGo'), zapiszOp(B, { kurier: 'dpd', ilosc: 52 })]);
+    assert.match(drugi, /WZ-00007/);
+    await czekajNaToast(A, /Wczytano kopię/, false, 60000);
+    sprawdzNumery(await zadanieJson(srv.port, '/api/snapshot'), 14);   // bez dubli, licznik WZ = najwyższy numer
+    assert.deepEqual([...A.bledy, ...B.bledy], []);
+  } finally { await ctx.close(); await srv.zatrzymaj(); }
+});
+
+test('(h4) usunięty kurier: Esc w pytaniu o przywrócenie niczego nie dodaje; „nowy kurier” w formularzu operacji wraca z historią', { timeout: 120000 }, async () => {
+  const ctx = await przegladarka.newContext();
+  try {
+    const A = sledz(await ctx.newPage(), 'H4');
+    await A.goto(URL_PLIKU); await gotowa(A);
+    await A.evaluate(async () => {
+      const db = await window.claude.use('db'); const b = db.batch(); const d = addDays(todayStr(), -1);
+      b.set(db.collection('transactions').doc('s1'), { kurierId: 'stary-kurier', kurierNazwa: 'Stary Kurier', typ: 'wydanie', ilosc: 5, data: d, uwagi: '', createdAt: Date.now() - 9e6, nr: 'WZ-00001' });
+      b.set(db.collection('transactions').doc('s2'), { kurierId: 'stary-kurier', kurierNazwa: 'Stary Kurier', typ: 'zwrot', ilosc: 1, data: d, uwagi: '', createdAt: Date.now() - 8e6, nr: 'PZ-00001' });
+      b.set(db.doc('meta/counters'), { wz: 1, pz: 1 }); await b.commit();
+    });
+    await A.waitForFunction(() => transactions.length === 2);
+    // „Dodaj kuriera” z nazwą usuniętego → pytanie; Esc = wycofanie się, nic nie powstaje
+    await A.evaluate(() => openAddCourierModal());
+    await A.fill('#addCourierName', 'Stary Kurier');
+    await A.click('#addCourierForm button[type="submit"]');
+    await A.waitForSelector('#confirmBtn');
+    assert.match(await A.textContent('#modalRoot'), /był już w ewidencji[\s\S]*zostały 2 operacje \(bilans \+4\)/);
+    await A.keyboard.press('Escape');
+    await A.waitForFunction(() => !document.getElementById('confirmBtn'));
+    await A.waitForTimeout(300);
+    assert.equal(await A.evaluate(() => couriers.filter((c) => /stary/i.test(c.name)).length), 0, 'Esc nic nie dodaje');
+    // formularz operacji → „+ nowy kurier” z tą nazwą → „Przywróć z historią” → operacja u przywróconego kuriera
+    await idzDo(A, 'new'); await A.waitForSelector('#opForm');
+    await A.click('#opForm label.opt-wydanie');
+    await A.selectOption('#kurierSelect', '__new__');
+    await A.fill('#newCourierName', 'stary kurier');
+    await A.fill('#opForm input[name="ilosc"]', '3');
+    await A.click('#opForm button[type="submit"]');
+    await A.waitForSelector('#confirmBtn');
+    assert.match(await A.textContent('#modalRoot'), /Przywrócić go razem z tą historią/);
+    await A.click('#confirmBtn');
+    assert.match(await wynikZapisu(A), /WZ-00002/);
+    assert.deepEqual(await A.evaluate(() => [couriers.filter((c) => /stary/i.test(c.name)).map((c) => c.id), transactions.filter((t) => t.kurierId === 'stary-kurier').length]), [['stary-kurier'], 3]);
+    await saldo(A, '7 szt.');
+    assert.deepEqual(A.bledy, []);
+  } finally { await ctx.close(); }
 });

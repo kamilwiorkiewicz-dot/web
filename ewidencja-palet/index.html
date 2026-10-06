@@ -178,7 +178,7 @@
   .btn-ghost{ border-color:transparent; background:transparent; }
   .btn-ghost:hover{ background:var(--panel-2); border-color:transparent; }
   .btn-sm{ padding:7px 11px; font-size:12.5px; }
-  .btn:disabled{ opacity:.5; cursor:not-allowed; }
+  .btn:disabled, .btn[aria-disabled="true"]{ opacity:.5; cursor:not-allowed; }
   .btn-block{ width:100%; justify-content:center; }
 
   /* ---------- cards / grid ---------- */
@@ -327,7 +327,8 @@
   .period-tabs button{ border:none; background:transparent; padding:8px 13px; border-radius:7px; font-size:12.5px; font-weight:600; color:var(--text-dim); cursor:pointer; }
   .period-tabs button.active{ background:var(--panel); color:var(--accent-strong); box-shadow:0 0 0 1px var(--border); }
   .stats-grid-2{ grid-template-columns:1.3fr 1fr; }
-  @media (max-width:980px){ .stats-grid-2{ grid-template-columns:1fr; } }
+  /* two charts side by side only where the narrower one still gets ~400 px (bar labels stay full size) */
+  @media (max-width:1200px){ .stats-grid-2{ grid-template-columns:1fr; } }
   .chart-legend{ display:flex; gap:16px; margin-bottom:10px; flex-wrap:wrap; }
   .chart-legend .item{ display:flex; align-items:center; gap:6px; font-size:13.5px; color:var(--text-dim); }
   .chart-legend .dot{ width:9px; height:9px; border-radius:3px; }
@@ -690,6 +691,7 @@ function palet(n){ return `${num(n)} ${plForm(n,'paleta','palety','palet')}`; }
 function paletAcc(n){ return `${num(n)} ${plForm(n,'paletę','palety','palet')}`; } // biernik: „ma u siebie 1 paletę”
 function dni(n){ return `${num(n)} ${n===1?'dzień':'dni'}`; }
 function opsLabel(n){ return `${num(n)} ${plForm(n,'operacja','operacje','operacji')}`; }
+function opsAcc(n){ return `${num(n)} ${plForm(n,'operację','operacje','operacji')}`; }
 
 // amount in words for printed documents (1 → "jeden", 112 → "sto dwanaście")
 function slownie(n){
@@ -866,6 +868,7 @@ async function migrateDockets(){
         if(used.has(nr)) nr = padNr(t.typ, next[t.typ]++);
         used.add(nr);
         await db.collection('transactions').doc(t.id).update({nr});
+        if(olderTx.has(t.id)) olderTx.set(t.id, {...olderTx.get(t.id), nr});
       }
       const maxOf = (prefix)=> Math.max(0, ...[...used].filter(x=>x.startsWith(prefix)).map(docketNum));
       const now = await readCounters();   // re-read: the counter only ever goes up
@@ -873,7 +876,7 @@ async function migrateDockets(){
       if(!now.exists || now.data.wz!==target.wz || now.data.pz!==target.pz) await writeCounters(now, target);
     });
   }catch(e){ console.error(e); /* view-only viewers can't write; numbers still display from the computed fallback */ }
-  if(migrating){ migrating = false; render(true); }
+  if(migrating){ migrating = false; mergeTransactions(); render(true); }
 }
 
 /* ---------------------------- BADGES ---------------------------- */
@@ -1179,6 +1182,9 @@ function render(fromData){
   const focusId = (active && main.contains(active) && active.id) ? active.id : null;
   const selStart = focusId && typeof active.selectionStart==='number' ? active.selectionStart : null;
   const selEnd = focusId && typeof active.selectionEnd==='number' ? active.selectionEnd : null;
+  // a control without an id is found again by its tag and data-* attributes
+  const focusSel = (!focusId && active && active!==main && main.contains(active) && active.dataset && Object.keys(active.dataset).length)
+    ? active.tagName.toLowerCase() + Object.entries(active.dataset).map(([k,v])=>`[data-${k.replace(/[A-Z]/g,m=>'-'+m.toLowerCase())}="${CSS.escape(v)}"]`).join('') : null;
 
   if(fromData && currentView==='new' && document.getElementById('opForm')){ refreshOpFormCouriers(); return; }
   if(currentView==='dashboard') main.innerHTML = viewDashboard();
@@ -1190,12 +1196,16 @@ function render(fromData){
   else if(currentView==='settings') main.innerHTML = viewSettings();
   bindViewEvents();
 
+  fitHBars(main);
   if(focusId){
     const el = document.getElementById(focusId);
     if(el){
       el.focus({preventScroll:true});
       if(selStart!==null){ try{ el.setSelectionRange(selStart, selEnd); }catch(e){} }
     }
+  } else if(focusSel){
+    let el = null; try{ el = main.querySelector(focusSel); }catch(e){ el = null; }
+    if(el && el.offsetParent!==null) el.focus({preventScroll:true});
   }
 }
 
@@ -1358,7 +1368,8 @@ function viewNewOp(editId){
 
           <div class="field">
             <label for="opData">Data operacji <span class="req">*</span></label>
-            <input type="date" id="opData" name="data" value="${dateVal}" max="${todayStr()}" required>
+            <input type="date" id="opData" name="data" value="${dateVal}" max="${todayStr()}" required aria-describedby="opDateHint">
+            <div class="hint-line warn" id="opDateHint" role="status" hidden></div>
           </div>
 
           <div class="field span2">
@@ -1546,25 +1557,58 @@ function svgLineChart(labels, series, color, opts={}){
     ${xLabels}
   </svg>`;
 }
-// width of a chart label in SVG user units (13px Space Grotesk, semibold); estimated when canvas is unavailable
+// width of a chart label in SVG user units (13px Space Grotesk, semibold — the same font stack as the
+// SVG text); estimated when canvas is unavailable
 let labelCanvas = null;
 function labelWidth(text){
   try{
     labelCanvas = labelCanvas || document.createElement('canvas').getContext('2d');
-    labelCanvas.font = '600 13px "Space Grotesk", system-ui, sans-serif';
+    labelCanvas.font = '600 13px "Space Grotesk", sans-serif';
     return labelCanvas.measureText(text).width;
   }catch(e){ return Array.from(text).length*8; }
 }
-function fitLabel(text, avail){
-  const chars = Array.from(String(text));
-  if(labelWidth(chars.join('')) <= avail) return chars.join('');
-  let n = chars.length;
-  while(n>1 && labelWidth(chars.slice(0,n).join('').trimEnd()+'…') > avail) n--;
-  return chars.slice(0,n).join('').trimEnd()+'…';
+// user-perceived characters (a flag or an emoji with modifiers is never cut in half)
+const graphemeSeg = (typeof Intl!=='undefined' && Intl.Segmenter) ? new Intl.Segmenter('pl', {granularity:'grapheme'}) : null;
+function graphemes(s){ s = String(s); return graphemeSeg ? Array.from(graphemeSeg.segment(s), x=>x.segment) : Array.from(s); }
+// a label that does not fit loses its middle ("Poczta Pol…Łódź"), so branches of one company stay distinguishable
+function shortLabel(g, n){
+  if(n >= g.length) return g.join('');
+  const head = Math.max(1, Math.ceil(n*0.6)), tail = Math.max(0, n-head);
+  return g.slice(0, head).join('').trimEnd() + '…' + (tail ? g.slice(g.length-tail).join('').trimStart() : '');
 }
+function fitLabel(text, avail){
+  const g = graphemes(text);
+  if(labelWidth(g.join('')) <= avail) return g.join('');
+  let n = g.length - 1;
+  while(n>1 && labelWidth(shortLabel(g, n)) > avail) n--;
+  return shortLabel(g, n);
+}
+// Bar charts are drawn again at the real width of their panel once it is on screen (scale 1: 13px labels
+// stay 13px and the measured widths match what is drawn); a label still sticking out is shortened more.
+let hbarCharts = [];
+function fitHBars(root){
+  const list = hbarCharts; hbarCharts = [];
+  if(!root) return;
+  root.querySelectorAll('svg[data-hbar]').forEach(svg=>{
+    const c = list[+svg.dataset.hbar]; if(!c) return;
+    let el = svg;
+    const real = Math.round(svg.getBoundingClientRect().width);
+    if(real >= 200 && Math.abs(real - svg.viewBox.baseVal.width) > 2){
+      const tmp = document.createElement('div'); tmp.innerHTML = svgHBar(c.items, {...c.opts, width: real}); hbarCharts = [];
+      el = tmp.firstElementChild; svg.replaceWith(el);
+    }
+    el.querySelectorAll('text[data-full]').forEach(t=>{
+      const g = graphemes(t.dataset.full); let n = graphemes(t.textContent).length;
+      try{ while(n>1 && t.getBBox().x < 1){ n--; t.textContent = shortLabel(g, n); } }catch(e){}
+    });
+  });
+}
+if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>{ if(db && currentView==='stats') render(); });
 function svgHBar(items, opts={}){
-  // in the two-column statistics layout the panel is less than half the content width
-  const w = opts.width || (window.innerWidth > 980 ? 460 : chartWidth()), rowH=32, padR=Math.round(Math.min(58, Math.max(38, w*0.13))), padT=6;
+  // first guess before layout (fitHBars then uses the panel's real width): in the two-column statistics
+  // layout the panel is less than half the content width
+  const w = opts.width || (window.innerWidth > 1200 ? 460 : chartWidth()), rowH=32, padR=Math.round(Math.min(58, Math.max(38, w*0.13))), padT=6;
+  const idx = hbarCharts.push({items, opts}) - 1;
   const longest = Math.max(0, ...items.map(it=>labelWidth(String(it.label))));
   const padL = Math.round(Math.min(w*0.42, Math.max(76, longest + 18)));
   const h = padT*2 + rowH*items.length;
@@ -1575,12 +1619,12 @@ function svgHBar(items, opts={}){
     const label = fitLabel(it.label, padL-14);
     rows += `
       <g><title>${escapeHtml(it.label)}: ${num(it.value)}</title>
-      <text x="${padL-9}" y="${y+rowH/2+4.5}" font-size="13" font-weight="600" text-anchor="end" fill="var(--text)" font-family="Space Grotesk, sans-serif">${escapeHtml(label)}</text>
+      <text x="${padL-9}" y="${y+rowH/2+4.5}" font-size="13" font-weight="600" text-anchor="end" fill="var(--text)" font-family="Space Grotesk, sans-serif" data-full="${escapeHtml(it.label)}">${escapeHtml(label)}</text>
       <rect x="${padL}" y="${y+6}" width="${Math.max(2,barW)}" height="${rowH-12}" rx="4" fill="${it.color||'var(--accent)'}"/>
       <text x="${padL+barW+8}" y="${y+rowH/2+4.5}" font-size="12.5" font-weight="600" fill="var(--text-dim)" font-family="IBM Plex Mono, monospace">${num(it.value)}</text></g>
     `;
   });
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img">${rows}</svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" role="img" data-hbar="${idx}">${rows}</svg>`;
 }
 
 
@@ -2035,8 +2079,8 @@ function viewCourierDetail(id){
       <div class="panel-title">
         <h2>Rozliczenie z kurierem</h2>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button type="button" class="btn btn-sm" data-action="st-print" ${stBad?'disabled':''}>${ICONS.printer}Drukuj / PDF</button>
-          <button type="button" class="btn btn-sm" data-action="st-csv" ${stBad?'disabled':''}>${ICONS.download}CSV</button>
+          <button type="button" class="btn btn-sm" data-action="st-print" ${stBad?'aria-disabled="true"':''}>${ICONS.printer}Drukuj / PDF</button>
+          <button type="button" class="btn btn-sm" data-action="st-csv" ${stBad?'aria-disabled="true"':''}>${ICONS.download}CSV</button>
         </div>
       </div>
       <div class="chips" style="margin-bottom:10px;">${stPresets.map(pr=>`<button type="button" class="chip-btn ${stFrom===pr.from && stTo===pr.to?'active':''}" data-st-preset="${pr.key}">${pr.label}</button>`).join('')}</div>
@@ -2285,7 +2329,9 @@ function parseBackup(text){
   let j; try{ j = JSON.parse(text); }catch(e){ throw new Error('To nie jest prawidłowy plik JSON.'); }
   if(!j || j.app!=='ewidencja-palet' || !Array.isArray(j.transactions) || !Array.isArray(j.couriers)) throw new Error('To nie jest plik kopii Ewidencji Palet.');
   const ID = /^[A-Za-z0-9_\-.~:@+]{1,200}$/;
-  const out = {exportedAt:j.exportedAt||'', couriers:[], transactions:[], skipped:0, counters:(j.meta && j.meta.counters) || {}, logos:(j.logos && typeof j.logos==='object') ? j.logos : {}};
+  const out = {exportedAt:j.exportedAt||'', couriers:[], transactions:[], skipped:0, counters:{}, logos:(j.logos && typeof j.logos==='object') ? j.logos : {}};
+  const jc = (j.meta && j.meta.counters) || {};
+  ['wz','pz'].forEach(k=>{ const v = Number(jc[k]); if(Number.isSafeInteger(v) && v>=0 && v<=9999999) out.counters[k] = v; });
   j.couriers.forEach(c=>{
     if(!(c && typeof c.id==='string' && ID.test(c.id) && typeof c.name==='string' && c.name.trim())){ out.skipped++; return; }
     const d = {name:c.name.trim().slice(0,60), order:Number.isFinite(c.order)? c.order : 0, color:safeColor(c.color, COURIER_COLORS[0]), custom:!!c.custom, enabled:c.enabled!==false};
@@ -2332,6 +2378,10 @@ function planMerge(parsed){
     if(diffs.length) differ.push({name:lc.name, diffs});
   });
   const renumber = parsed.transactions.filter(t=> !txIds.has(t.id) && t.data.nr && usedNr.has(t.data.nr) && usedNr.get(t.data.nr)!==t.id).map(t=>t.id);
+  // the same number on two new operations of the file: the later one (by creation time) gets a new number
+  const inFile = new Set();
+  parsed.transactions.filter(t=> !txIds.has(t.id) && t.data.nr).sort((a,b)=>(a.data.createdAt||0)-(b.data.createdAt||0))
+    .forEach(t=>{ if(inFile.has(t.data.nr)){ if(!renumber.includes(t.id)) renumber.push(t.id); } else inFile.add(t.data.nr); });
   return {fills, differ, renumber};
 }
 // a default courier only auto-created on first start and never changed in any way
@@ -2411,9 +2461,26 @@ async function runImport(parsed, mode){
   // the stored one, the file's, or any number already in use here or in the file — and operations from
   // the file whose number is taken here get the next numbers, saved together with them below.
   const newNr = new Map();
+  const addIds = new Set(addT.map(t=>t.id));
+  // highest numbers known here before waiting for the numbering lease
+  const seenTop = {wydanie:(counters&&counters.wz)||0, zwrot:(counters&&counters.pz)||0};
+  { const map = buildDocketMap(); transactions.forEach(t=>{ const n = docketNum(map[t.id]); if(n > (seenTop[t.typ]||0)) seenTop[t.typ] = n; }); }
+  let reserved = null;
   try{
     await withNumberingLock(async ()=>{
       const cur = await readCounters();
+      if(mode==='merge'){
+        // while this step waited for the lease, another device may have saved operations: check the file's
+        // numbers against the local copy again, and treat numbers handed out meanwhile (not saved here yet)
+        // as taken; operations from old copies without a number get theirs here as well, in date order
+        planMerge(parsed).renumber.forEach(id=>renumberSet.add(id));
+        parsed.transactions.forEach(t=>{
+          if(!addIds.has(t.id)) return;
+          if(!hasValidNr(t.data)){ renumberSet.add(t.id); return; }
+          const n = docketNum(t.data.nr), k = t.data.typ==='wydanie' ? 'wz' : 'pz';
+          if(n > (seenTop[t.data.typ]||0) && n <= (cur.data[k]||0)) renumberSet.add(t.id);
+        });
+      }
       const top = {
         wydanie: Math.max(cur.data.wz||0, (counters&&counters.wz)||0, Number(parsed.counters.wz)||0),
         zwrot: Math.max(cur.data.pz||0, (counters&&counters.pz)||0, Number(parsed.counters.pz)||0),
@@ -2424,10 +2491,14 @@ async function runImport(parsed, mode){
       parsed.transactions.filter(t=>renumberSet.has(t.id)).sort((a,b)=>(a.data.createdAt||0)-(b.data.createdAt||0))
         .forEach(t=>{ top[t.data.typ] += 1; newNr.set(t.id, padNr(t.data.typ, top[t.data.typ])); });
       const target = {wz: top.wydanie, pz: top.zwrot};
-      if(!cur.exists || cur.data.wz!==target.wz || cur.data.pz!==target.pz) await writeCounters(cur, target);
+      if(!cur.exists || cur.data.wz!==target.wz || cur.data.pz!==target.pz){
+        await writeCounters(cur, target);
+        if(newNr.size) reserved = {before:{wz:cur.data.wz||0, pz:cur.data.pz||0}, target};
+      }
     });
   }catch(e){
     console.error(e); importRunning = false; bulkWriting = false; closeModal();
+    mergeTransactions(); render(); migrateDockets();   // live updates that arrived while waiting were held back
     toast(e && e.code==='busy' ? 'Numeracja dokumentów jest zajęta na innym urządzeniu — nic nie zapisano, spróbuj ponownie.' : 'Nie udało się przygotować numerów dokumentów — nic nie zapisano. Spróbuj ponownie.', true);
     return;
   }
@@ -2480,7 +2551,12 @@ async function runImport(parsed, mode){
   try{
     if(!(settings && settings.seeded)){ await db.doc('meta/settings').set({...(settings||{}), seeded:true}); }
   }catch(e){ failed++; console.error(e); }
-  const renumbered = newNr.size;
+  // nothing was written: give the reserved numbers back (unless someone has taken a later one meanwhile)
+  if(reserved && failed >= writes.length){
+    try{ await withNumberingLock(async ()=>{ const cur = await readCounters(); if(cur.data.wz===reserved.target.wz && cur.data.pz===reserved.target.pz) await writeCounters(cur, reserved.before); }); }
+    catch(e){ console.warn('release', e); }
+  }
+  const renumbered = failed ? 0 : newNr.size;
   couriersSeeded = true; importRunning = false; bulkWriting = false; docketMigrationDone = false;
   // imported operations older than the live window are not delivered by the subscription — reload that part
   olderTx.clear(); olderBoundary = null;
@@ -2523,13 +2599,15 @@ async function handleIssueAction(btn){
     }catch(e){ console.error(e); toast('Nie udało się nadać numerów', true); btn.disabled = false; }
   }
   else if(act==='restore-courier'){
+    if(!historyComplete){ toast('Trwa wczytywanie historii — spróbuj za chwilę', true); return; }
+    if(movingOps) return;
     const name = String(btn.dataset.name||id).trim().replace(/\s+/g,' ').slice(0,60);
     // a courier with this name was added again meanwhile: a second one with the same name would split
     // the history between two identical cards — move the operations to the existing one instead
     const same = couriers.find(c=>(c.name||'').trim().toLowerCase()===name.toLowerCase());
     if(same){
       const ops = transactions.filter(t=>t.kurierId===id);
-      const ok = await confirmDialog('Kurier o tej nazwie już jest', `Na liście jest już kurier „${escapeHtml(same.name)}”. Przenieść do niego ${opsLabel(ops.length)} usuniętego kuriera „${escapeHtml(name)}”? Jego bilans i rozliczenia obejmą wtedy także te operacje.`, {okLabel:'Przenieś operacje', danger:false});
+      const ok = await confirmDialog('Kurier o tej nazwie już jest', `Na liście jest już kurier „${escapeHtml(same.name)}”. Przenieść do niego ${opsAcc(ops.length)} usuniętego kuriera „${escapeHtml(name)}”? Jego bilans i rozliczenia obejmą wtedy także te operacje.`, {okLabel:'Przenieś operacje', danger:false});
       if(!ok) return;
       await moveOperations(ops, same);
       return;
@@ -2552,19 +2630,38 @@ async function restoreCourier(id, name, color){
   const order = (couriers.length? Math.max(...couriers.map(c=>c.order||0)) : 0) + 1;
   await db.collection('couriers').doc(id).set({name:String(name).slice(0,60), order, color: color || COURIER_COLORS[couriers.length % COURIER_COLORS.length], custom:true, enabled:true});
 }
-// operations of a deleted courier moved to an existing one
+// operations of a deleted courier moved to an existing one (one move at a time, with progress)
+let movingOps = false;
 async function moveOperations(ops, target){
-  let moved = 0, failed = 0;
-  for(const t of ops){
-    try{
-      await db.collection('transactions').doc(t.id).update({kurierId:target.id, kurierNazwa:target.name});
-      applyLocalTx(t.id, {...t, kurierId:target.id, kurierNazwa:target.name});
-      moved++;
-    }catch(e){ failed++; console.error('move', t.id, e); }
+  if(movingOps) return;
+  movingOps = true; bulkWriting = true;
+  openModal(`<h2>Przenoszenie operacji…</h2><div class="modal-sub" id="moveProgress">Przygotowanie…</div><div class="meter"><span id="moveBar" style="width:0%"></span></div>`);
+  modalCancelHook = ()=>{};   // can't be dismissed while writing
+  const patch = {kurierId:target.id, kurierNazwa:target.name};
+  let moved = 0, failed = 0, done = 0;
+  const progress = ()=>{ const el = document.getElementById('moveProgress'), bar = document.getElementById('moveBar'); if(el) el.textContent = `Przeniesiono ${num(done)} z ${num(ops.length)}…`; if(bar) bar.style.width = (ops.length ? done/ops.length*100 : 100).toFixed(1)+'%'; };
+  const local = (list)=>{ list.forEach(t=>applyLocalTx(t.id, {...t, ...patch})); noteLocalWrite(); };   // older-history reloads restart with the change
+  try{
+    if(typeof db.batch==='function'){
+      for(let i=0; i<ops.length; i+=400){
+        const chunk = ops.slice(i, i+400);
+        try{ const b = db.batch(); chunk.forEach(t=>b.update(db.collection('transactions').doc(t.id), patch)); await b.commit(); local(chunk); moved += chunk.length; }
+        catch(e){ failed += chunk.length; console.error('move batch', e); }
+        done += chunk.length; progress();
+      }
+    } else {
+      for(const t of ops){
+        try{ await db.collection('transactions').doc(t.id).update(patch); local([t]); moved++; }
+        catch(e){ failed++; console.error('move', t.id, e); }
+        done++; if(done%5===0 || done===ops.length) progress();
+      }
+    }
+  } finally {
+    movingOps = false; bulkWriting = false;
+    closeModal(); mergeTransactions(); render();
   }
-  mergeTransactions(); render(); noteLocalWrite();
-  if(failed) toast(`Przeniesiono ${opsLabel(moved)}, nie udało się przenieść ${num(failed)} — spróbuj ponownie.`, true);
-  else toast(`Przeniesiono ${opsLabel(moved)} do kuriera „${target.name}”`);
+  if(failed) toast(`Przeniesiono ${opsAcc(moved)}, nie udało się przenieść ${num(failed)} — spróbuj ponownie.`, true);
+  else toast(`Przeniesiono ${opsAcc(moved)} do kuriera „${target.name}”`);
 }
 
 function exportStatementCsv(id){
@@ -2848,14 +2945,30 @@ function confirmModal(title, msg, onConfirm, opts){
     <div class="modal-close-row"><button type="button" class="btn" data-action="close-modal">${escapeHtml(opts.cancelLabel||'Anuluj')}</button><button type="button" class="btn ${opts.danger===false?'btn-primary':'btn-danger'}" id="confirmBtn">${escapeHtml(opts.okLabel||'Usuń')}</button></div>
   `);
   let done = false;
-  const finish = (ok)=>{ if(done) return; done = true; closeModal(); if(ok) onConfirm(); else if(opts.onCancel) opts.onCancel(); };
+  // ok: true = confirm button, false = cancel button, null = Esc / click outside (opts.onDismiss when given)
+  const finish = (ok)=>{ if(done) return; done = true; closeModal(); if(ok===true) onConfirm(); else if(ok===null && opts.onDismiss) opts.onDismiss(); else if(opts.onCancel) opts.onCancel(); };
   document.querySelector('#modalRoot [data-action="close-modal"]').addEventListener('click', ()=>finish(false));
   document.getElementById('confirmBtn').addEventListener('click', ()=>finish(true));
-  modalCancelHook = ()=>finish(false);
+  modalCancelHook = ()=>finish(null);
   setTimeout(()=>{ const b = document.getElementById('confirmBtn'); if(b) b.focus(); }, 1);
 }
+// resolves true / false; with opts.threeWay, Esc or a click outside resolves null ("back out")
 function confirmDialog(title, msg, opts){
-  return new Promise(resolve=> confirmModal(title, msg, ()=>resolve(true), {...(opts||{}), onCancel:()=>resolve(false)}));
+  opts = opts || {};
+  return new Promise(resolve=> confirmModal(title, msg, ()=>resolve(true), {...opts, onCancel:()=>resolve(false), onDismiss: opts.threeWay ? ()=>resolve(null) : undefined}));
+}
+// a deleted courier (operations left, courier gone) whose operations carry this name: {id, n, bal} or null
+function findOrphanByName(name){
+  const key = String(name).trim().toLowerCase(), hits = {};
+  transactions.forEach(t=>{ if(!courierById(t.kurierId) && (t.kurierNazwa||'').trim().toLowerCase()===key) hits[t.kurierId] = (hits[t.kurierId]||0) + 1; });
+  const id = Object.keys(hits).sort((a,b)=>hits[b]-hits[a])[0];
+  if(!id) return null;
+  // the numbers shown are those of everything that comes back (the courier may have been renamed before deletion)
+  const ops = transactions.filter(t=>t.kurierId===id);
+  return {id, n: ops.length, bal: ops.reduce((s,t)=> s + (t.typ==='wydanie' ? t.ilosc : -t.ilosc), 0)};
+}
+function askRestore(name, o){
+  return confirmDialog('Ten kurier był już w ewidencji', `Kurier „${escapeHtml(name)}” został wcześniej usunięty, a w historii ${plForm(o.n,'została','zostały','zostało')} ${opsLabel(o.n)} (bilans ${o.bal>0?'+':''}${num(o.bal)}). Przywrócić go razem z tą historią? „Dodaj nowego” utworzy osobnego kuriera bez tych operacji.`, {okLabel:'Przywróć z historią', cancelLabel:'Dodaj nowego', danger:false, threeWay:true});
 }
 
 /* ---------------------------- ACTIONS ---------------------------- */
@@ -2864,14 +2977,12 @@ async function createCourier(name, color){
   name = String(name).trim().replace(/\s+/g,' ').slice(0,60);
   const same = couriers.find(c=>(c.name||'').trim().toLowerCase()===name.toLowerCase());
   if(same){ toast(`Kurier „${same.name}” już jest na liście`, true); return; }
-  const orphan = {};
-  transactions.forEach(t=>{ if(!courierById(t.kurierId) && (t.kurierNazwa||'').trim().toLowerCase()===name.toLowerCase()){ const o = orphan[t.kurierId] = orphan[t.kurierId] || {n:0, bal:0}; o.n++; o.bal += t.typ==='wydanie' ? t.ilosc : -t.ilosc; } });
-  const prevId = Object.keys(orphan).sort((a,b)=>orphan[b].n-orphan[a].n)[0];
-  if(prevId){
-    const o = orphan[prevId];
-    const back = await confirmDialog('Ten kurier był już w ewidencji', `Kurier „${escapeHtml(name)}” został wcześniej usunięty, a w historii zostało ${opsLabel(o.n)} (bilans ${o.bal>0?'+':''}${num(o.bal)}). Przywrócić go razem z tą historią? „Dodaj nowego” utworzy osobnego kuriera bez tych operacji.`, {okLabel:'Przywróć z historią', cancelLabel:'Dodaj nowego', danger:false});
+  const o = findOrphanByName(name);
+  if(o){
+    const back = await askRestore(name, o);
+    if(back===null) return;   // Esc / click outside: nothing is added
     if(back){
-      try{ await restoreCourier(prevId, name, color); toast(`Przywrócono kuriera „${name}” z historią (${opsLabel(o.n)})`); }
+      try{ await restoreCourier(o.id, name, color); toast(`Przywrócono kuriera „${name}” z historią (${opsLabel(o.n)})`); }
       catch(e){ console.error(e); toast('Nie udało się przywrócić kuriera', true); }
       return;
     }
@@ -2939,7 +3050,16 @@ async function saveTransaction(form){
     const newName = String(fd.get('newCourierName')||'').trim().replace(/\s+/g,' ').slice(0,60);
     if(!newName){ toast('Podaj nazwę nowego kuriera', true); return false; }
     const same = couriers.find(c=>(c.name||'').trim().toLowerCase()===newName.toLowerCase());
+    const orphan = same ? null : findOrphanByName(newName);
+    const back = orphan ? await askRestore(newName, orphan) : false;
+    if(back===null) return false;
     if(same){ kurierId = same.id; kurierNazwa = same.name; toast(`Kurier „${same.name}” już istnieje — operacja zostanie zapisana u niego`); }
+    else if(back){
+      // the deleted courier comes back (with its history) and the operation is saved under it
+      const order = (couriers.length? Math.max(...couriers.map(c=>c.order||0)) : 0) + 1;
+      newCourier = {id:orphan.id, data:{name:newName, order, color:COURIER_COLORS[couriers.length % COURIER_COLORS.length], custom:true, enabled:true}};
+      kurierId = orphan.id; kurierNazwa = newName;
+    }
     else {
       let base = slugify(newName), id = base, i=2;
       while(courierById(id) || transactions.some(t=>t.kurierId===id)) { id = `${base}-${i}`; i++; }
@@ -2992,6 +3112,7 @@ async function saveTransaction(form){
   let allocated = null;
   try{
     if(orig){
+      if(orig.twinOk && (orig.kurierId!==payload.kurierId || orig.typ!==payload.typ || orig.ilosc!==payload.ilosc || orig.data!==payload.data)) payload.twinOk = false;
       if(orig.typ!==payload.typ){ allocated = payload.nr = await allocDocket(payload.typ); payload.nrAt = Date.now(); } // WZ ↔ PZ: new number of the right kind
       await db.collection('transactions').doc(editId).update(payload);
       applyLocalTx(editId, {...orig, ...payload});
@@ -3039,6 +3160,7 @@ async function deleteTransaction(id){
   catch(e){ console.error(e); toast('Nie udało się usunąć operacji', true); }
 }
 function exportCsv(){
+  if(historyFilters.from && historyFilters.to && historyFilters.from > historyFilters.to){ toast('Popraw okres — data „od” jest późniejsza niż „do”', true); return; }
   const rows = filteredTransactions(); const docketMap = buildDocketMap();
   const header = ['Dokument','Data','Kurier','Typ','Ilość','Uwagi'];
   const lines = [header.join(';')];
@@ -3057,6 +3179,8 @@ function exportCsv(){
 let pointerHeld = false;   // a mouse/touch press is in progress (seen in the capture phase, before the field's blur)
 document.addEventListener('pointerdown', ()=>{ pointerHeld = true; }, true);
 ['pointerup','pointercancel'].forEach(ev=> document.addEventListener(ev, ()=>{ pointerHeld = false; }, true));
+// some presses never deliver pointerup (a native select popup, a context menu): typing ends them
+document.addEventListener('keydown', ()=>{ pointerHeld = false; }, true);
 // run fn once the press in progress has ended and its click was handled — re-rendering between
 // mousedown and mouseup would replace the button being clicked, and the click would be lost
 function afterPointer(fn){
@@ -3092,7 +3216,8 @@ function bindDateInput(input, apply){
     afterPointer(()=>{
       const ae = document.activeElement;
       // only a data refresh is waiting and focus went on to another date field: that field's blur does it
-      if(!changed && ae && ae!==input && ae.matches && ae.matches('input[type=date]') && input.isConnected){ pendingDataRender = true; return; }
+      // (also the same field: switching windows blurs it while it stays focused, maybe half-typed)
+      if(!changed && ae && ae.matches && ae.matches('input[type=date]') && input.isConnected){ pendingDataRender = true; return; }
       rerender();
     });
   });
@@ -3103,16 +3228,36 @@ let shownDay = todayStr();
 function checkDayChange(){
   const now = todayStr(); if(now===shownDay) return;
   const prev = shownDay; shownDay = now;
-  document.querySelectorAll('input[type=date]').forEach(el=>{ if(el.max && el.max < now) el.max = now; });
+  const ae = document.activeElement;
+  document.querySelectorAll('input[type=date]').forEach(el=>{
+    if(!el.max || el.max >= now) return;
+    // changing the limit of the field being typed into would commit a half-typed segment: on blur / Enter
+    if(el===ae){ el.dataset.maxLater = now; return; }
+    el.max = now;
+  });
   const d = document.getElementById('opData');
-  if(d && !editingId && !d.dataset.touched && d.value && d.value===prev){ d.value = now; toast(`Zmienił się dzień — data operacji ustawiona na dziś (${fmtDate(now)}).`); }
+  if(d && !editingId && !d.dataset.touched && d.value && d.value===prev){
+    const q = document.getElementById('opIlosc'), u = document.getElementById('opUwagi');
+    if(d!==ae && (!q || !q.value) && (!u || !u.value.trim())){
+      d.value = now; toast(`Zmienił się dzień — data operacji ustawiona na dziś (${fmtDate(now)}).`);
+    } else {
+      // a form filled in yesterday keeps its date; saving it is stopped once, so the date gets checked
+      d.dataset.dayWarn = prev;
+      const h = document.getElementById('opDateHint');
+      if(h){ h.textContent = `Formularz otwarto ${fmtDate(prev)}, a jest już ${fmtDate(now)} — sprawdź datę operacji.`; h.hidden = false; }
+    }
+  }
   if(db) afterPointer(()=>render(true));   // "today" figures and limits; never between mousedown and mouseup
 }
+const applyMaxLater = (el)=>{ if(el && el.dataset && el.dataset.maxLater){ el.max = el.dataset.maxLater; delete el.dataset.maxLater; } };
 setInterval(checkDayChange, 30000);
 document.addEventListener('visibilitychange', checkDayChange);
 window.addEventListener('focus', checkDayChange);
 document.addEventListener('focusin', checkDayChange, true);
 document.addEventListener('pointerdown', checkDayChange, true);
+// keyboard too (Enter right after midnight saves with today's limits); Enter / leaving a date field applies a postponed limit
+document.addEventListener('keydown', (e)=>{ checkDayChange(); if(e.key==='Enter') applyMaxLater(e.target); }, true);
+document.addEventListener('focusout', (e)=>applyMaxLater(e.target), true);
 function bindViewEvents(){
   const main = document.getElementById('main');
 
@@ -3124,7 +3269,7 @@ function bindViewEvents(){
   const opForm = document.getElementById('opForm');
   if(opForm){
     const dIn = document.getElementById('opData');
-    if(dIn) ['input','change'].forEach(ev=> dIn.addEventListener(ev, ()=>{ dIn.dataset.touched = '1'; }));
+    if(dIn) ['input','change'].forEach(ev=> dIn.addEventListener(ev, ()=>{ dIn.dataset.touched = '1'; const h = document.getElementById('opDateHint'); if(h) h.hidden = true; }));
     const sel = document.getElementById('kurierSelect');
     const newField = document.getElementById('newCourierField');
     const syncNewField = ()=>{ newField.style.display = sel.value==='__new__' ? 'block':'none'; };
@@ -3154,6 +3299,13 @@ function bindViewEvents(){
       e.preventDefault();
       const action = (e.submitter && e.submitter.dataset && e.submitter.dataset.submit) || lastSubmitAction || 'save';
       lastSubmitAction = 'save';
+      // the day changed while this filled-in form was open: stop once, so the date is looked at
+      const dIn2 = document.getElementById('opData');
+      if(dIn2 && dIn2.dataset.dayWarn && !dIn2.dataset.touched && !dIn2.dataset.dayAck){
+        dIn2.dataset.dayAck = '1';
+        toast(`Zmienił się dzień — sprawdź datę operacji (${fmtDate(dIn2.value)}) i zapisz ponownie.`, true);
+        dIn2.focus(); return;
+      }
       const btns = [...opForm.querySelectorAll('button[type=submit]')]; btns.forEach(b=>b.disabled = true);
       const res = await saveTransaction(opForm);
       btns.forEach(b=>b.disabled = false);
