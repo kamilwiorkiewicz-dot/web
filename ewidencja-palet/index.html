@@ -803,7 +803,7 @@ async function lockedStep(fn){
   for(let i=0; i<25; i++){
     let res = null;
     try{ res = await lock.acquire({holder:TAB_ID, ttlMs:2500}); }
-    catch(e){ console.warn('lease', e); throw Object.assign(new Error('Brak połączenia z bazą — numer dokumentu nie został nadany.'), {code:'unavailable'}); }
+    catch(e){ console.warn('lease', e); if(e && e.auth) throw e; throw Object.assign(new Error('Brak połączenia z bazą — numer dokumentu nie został nadany.'), {code:'unavailable'}); }
     if(res && res.acquired){
       const state = {lost:false};
       const renew = setInterval(()=>{ lock.acquire({holder:TAB_ID, ttlMs:2500}).then(r=>{ if(r && r.acquired===false) state.lost = true; }).catch(()=>{}); }, 1000);
@@ -2504,6 +2504,7 @@ async function runImport(parsed, mode){
   const seenTop = {wydanie:0, zwrot:0};
   { const map = buildDocketMap(); transactions.forEach(t=>{ const n = saneNum(docketNum(map[t.id])); if(n > (seenTop[t.typ]||0)) seenTop[t.typ] = n; }); }
   const skipIds = new Set();   // file operations that turned out to be in the database already (merge adds only what is missing)
+  const recheck = [];          // kept file numbers that another device may have handed out a moment ago — checked again after saving
   let reserved = null;
   try{
     await withNumberingLock(async ()=>{
@@ -2515,12 +2516,23 @@ async function runImport(parsed, mode){
         const here = new Set(transactions.map(t=>t.id));
         addIds.forEach(id=>{ if(here.has(id)) skipIds.add(id); });   // arrived meanwhile (e.g. the same file on another device)
         planMerge(parsed).renumber.forEach(id=>renumberSet.add(id));
+        const between = [];
         parsed.transactions.forEach(t=>{
           if(!addIds.has(t.id) || skipIds.has(t.id)) return;
           if(!hasValidNr(t.data)){ renumberSet.add(t.id); return; }
           const n = docketNum(t.data.nr), k = t.data.typ==='wydanie' ? 'wz' : 'pz';
-          if(n > (seenTop[t.data.typ]||0) && n <= saneNum(cur.data[k]||0)) renumberSet.add(t.id);
+          if(n > (seenTop[t.data.typ]||0) && n <= saneNum(cur.data[k]||0) && !renumberSet.has(t.id)) between.push(t);
         });
+        // a number above those held here but within the counter: handed out on another device (its operation
+        // may still be on the way) or freed by a deletion (an operation brought back from a copy keeps it).
+        // It is taken only if another operation in the database has it; a number handed out a moment ago whose
+        // operation isn't saved yet is caught by that device's own duplicate check after saving.
+        if(between.length > 50) between.forEach(t=>renumberSet.add(t.id));
+        else for(let i=0; i<between.length; i+=5){
+          const res = await Promise.all(between.slice(i, i+5).map(t=>db.collection('transactions').where('nr','==',t.data.nr).get()
+            .then(sn=>sn.docs.some(d=>d.id!==t.id), ()=>true)));
+          res.forEach((taken, j)=>{ if(taken) renumberSet.add(between[i+j].id); else recheck.push(between[i+j]); });
+        }
         // the local copy can lag behind the database: an operation that is already stored there under the
         // same id is the same operation — it is left as it is, not given a new number
         const fileById = new Map(parsed.transactions.map(t=>[t.id, t]));
@@ -2602,6 +2614,18 @@ async function runImport(parsed, mode){
   } else {
     await Promise.all(Array.from({length: Math.min(6, Math.max(1, writes.length))}, worker));
   }
+  // a kept number that meanwhile turned up on another operation (saved on another device): this one takes a new number
+  let lateRenumbered = 0;
+  for(const t of recheck){
+    try{
+      const sn = await db.collection('transactions').where('nr','==',t.data.nr).get();
+      if(sn.docs.some(d=>d.id!==t.id) && sn.docs.some(d=>d.id===t.id)){
+        const fresh = await allocDocket(t.data.typ);
+        await db.collection('transactions').doc(t.id).update({nr:fresh, nrAt:Date.now()});
+        lateRenumbered++;
+      }
+    }catch(e){ console.warn('recheck', t.id, e); }
+  }
   let settingsFailed = false;
   try{
     if(!(settings && settings.seeded)){ await db.doc('meta/settings').set({...(settings||{}), seeded:true}); }
@@ -2611,7 +2635,7 @@ async function runImport(parsed, mode){
     try{ await withNumberingLock(async ()=>{ const cur = await readCounters(); if(cur.data.wz===reserved.target.wz && cur.data.pz===reserved.target.pz) await writeCounters(cur, reserved.before); }); }
     catch(e){ console.warn('release', e); }
   }
-  const renumbered = failed ? 0 : newNr.size;
+  const renumbered = failed ? 0 : newNr.size + lateRenumbered;
   couriersSeeded = true; docketMigrationDone = false;
   // imported operations older than the live window are not delivered by the subscription — reload that part
   olderTx.clear(); olderBoundary = null;
@@ -2700,13 +2724,26 @@ async function moveOperations(ops, target){
   let moved = 0, failed = 0, done = 0;
   const progress = ()=>{ const el = document.getElementById('moveProgress'), bar = document.getElementById('moveBar'); if(el) el.textContent = `Przeniesiono ${num(done)} z ${num(ops.length)}…`; if(bar) bar.style.width = (ops.length ? done/ops.length*100 : 100).toFixed(1)+'%'; };
   const local = (list)=>{ list.forEach(t=>applyLocalTx(t.id, {...t, ...patch})); };
-  const one = async (t)=>{ try{ await db.collection('transactions').doc(t.id).update(patch); local([t]); moved++; } catch(e){ failed++; console.error('move', t.id, e); } done++; };
+  // no connection (or the password refused): the rest is not attempted — it would only wait for timeouts
+  const offline = (e)=> !!(e && (e.network || e.auth || e.code==='unavailable'));
+  let stopped = false;
+  const one = async (t)=>{
+    if(stopped){ failed++; done++; return; }
+    try{ await db.collection('transactions').doc(t.id).update(patch); local([t]); moved++; }
+    catch(e){ failed++; console.error('move', t.id, e); if(offline(e)) stopped = true; }
+    done++;
+  };
   try{
     if(typeof db.batch==='function'){
       for(let i=0; i<ops.length; i+=400){
         const chunk = ops.slice(i, i+400);
+        if(stopped){ failed += chunk.length; done += chunk.length; continue; }
         try{ const b = db.batch(); chunk.forEach(t=>b.update(db.collection('transactions').doc(t.id), patch)); await b.commit(); local(chunk); moved += chunk.length; done += chunk.length; }
-        catch(e){ console.warn('move batch', e); for(const t of chunk) await one(t); }   // e.g. one of them deleted elsewhere: the rest still moves
+        catch(e){
+          console.warn('move batch', e);
+          if(offline(e)){ stopped = true; failed += chunk.length; done += chunk.length; }
+          else for(const t of chunk){ await one(t); if(done%5===0) progress(); }   // e.g. one of them deleted elsewhere: the rest still moves
+        }
         noteLocalWrite(); progress();
       }
     } else {

@@ -801,6 +801,8 @@
     es.addEventListener('ping', function (e) {
       if (self.es !== es) return;
       self.lastSeen = Date.now();
+      // serwer odpowiada (np. po jednym odrzuconym żądaniu, gdy strumień działał dalej) — pasek „brak połączenia” znika
+      if (!self.online && !self.authStop && !self.buffer) self.setOnline(true);
       var p = {}; try { p = JSON.parse(e.data); } catch (x) { /* ignore */ }
       // wszystko do p.rev zostało już wysłane tym strumieniem — jeśli lustro jest niżej, coś zginęło
       if (self.anchored && !self.buffer && Number(p.rev) > self.mirrorRev) self.resync().then(noop, noop);

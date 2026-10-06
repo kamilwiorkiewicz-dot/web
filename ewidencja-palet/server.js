@@ -643,45 +643,70 @@ function stworzSerwer(cfg, log) {
   };
 
   // Hasło (HTTP Basic) i sesje. Po poprawnym haśle przeglądarka dostaje ciasteczko sesji (HttpOnly, nazwa
-  // zależna od instancji, żeby dwie Ewidencje na jednym komputerze sobie go nie nadpisywały): żądania z ważnym
+  // z losowym identyfikatorem instancji, żeby dwie Ewidencje na jednym komputerze/NAS-ie — także dwa
+  // kontenery z tym samym DATA_DIR wewnątrz — nie nadpisywały sobie logowania): żądania z ważnym
   // ciasteczkiem przechodzą bez sprawdzania hasła i bez względu na blokadę, więc zalogowane urządzenia działają
   // dalej, nawet gdy ktoś inny wpisuje złe hasła (albo wszyscy wchodzą przez jedno proxy).
   // Po PROG_PROB różnych błędnych hasłach z jednego adresu kolejne próby z niego są przez pewien czas odrzucane
   // bez sprawdzania (429): 30 s, potem dwa razy dłużej przy każdym następnym nowym błędnym haśle, najwyżej
   // 15 min. To samo błędne hasło powtarzane w kółko (np. stare hasło zapamiętane przez przeglądarkę po zmianie
   // hasła na serwerze) liczy się raz. Poprawne hasło kasuje licznik. Żądania bez hasła (pierwsze wejście
-  // przeglądarki) się nie liczą. Za zaufanym proxy liczone są adresy klientów z X-Forwarded-For, a dodatkowo
-  // (wyższy próg) adres nadawcy — tak podrabianie tego nagłówka z pominięciem proxy nie znosi blokady.
-  // Sesje są zapisywane w DATA_DIR/sesje.json razem ze skrótem hasła: przetrwają ponowne uruchomienie serwera,
-  // a zmiana hasła je unieważnia.
+  // przeglądarki) się nie liczą. Za zaufanym proxy liczone są adresy klientów z X-Forwarded-For; przy
+  // EP_ZAUFANE_PROXY=1 (ufaj każdemu nadawcy) dodatkowo, z wyższym progiem, adres nadawcy — tak podrabianie
+  // tego nagłówka z pominięciem proxy nie znosi blokady.
+  // Sesje są zapisywane w DATA_DIR/sesje.json (skróty tokenów i weryfikator hasła scrypt z solą — nie da się
+  // z niego szybko odgadnąć hasła): przetrwają ponowne uruchomienie serwera, a zmiana hasła je unieważnia
+  // (plik jest wtedy od razu czyszczony, więc powrót do starego hasła ich nie przywraca).
   const PROG_PROB = 5, PROG_NADAWCA = 50, MAKS_BLOKADA_MS = 15 * 60 * 1000, ZAPOMNIJ_MS = 60 * 60 * 1000;
+  const ZAPOMNIJ_NADAWCE_MS = 15 * 60 * 1000;
   const SESJA_MS = 30 * 24 * 3600 * 1000, MAKS_SESJI = 10000, ODSWIEZ_SESJE_MS = 10 * 60 * 1000;
   const skrot = (s) => crypto.createHash('sha256').update(s, 'utf8').digest();
-  const CIASTKO = 'ep_sesja_' + skrot(path.resolve(cfg.dataDir)).toString('hex').slice(0, 8);
-  const proby = new Map(); // klucz (adres) -> {n, zle: Set skrótów błędnych haseł, blokadaDo, ostatnio, zalogowano}
-  const sesje = new Map(); // skrót tokenu -> {do, uzyto}; kolejność = od najdawniej używanej
+  const proby = new Map();    // klucz (adres klienta) -> {n, zle: Set skrótów błędnych haseł, blokadaDo, ostatnio, zalogowano}
+  const nadawcy = new Map();  // adres nadawcy przy EP_ZAUFANE_PROXY=1 — osobno, żeby zalew kluczy klientów go nie wymazał
+  const sesje = new Map();    // skrót tokenu -> {do, uzyto}; kolejność = od najdawniej używanej
   const skrotHasla = cfg.haslo ? skrot(cfg.haslo) : null;
   const plikSesji = path.join(cfg.dataDir, 'sesje.json');
-  const znakHasla = cfg.haslo ? crypto.createHash('sha256').update('ep-sesje|' + cfg.haslo, 'utf8').digest('hex') : null;
   const skrotTokenu = (t) => crypto.createHash('sha256').update(t, 'utf8').digest('hex').slice(0, 40);
+  // plik sesji: {id instancji, sól, weryfikator hasła (scrypt), sesje}
+  let zSesji = null;
+  try { zSesji = JSON.parse(fs.readFileSync(plikSesji, 'utf8')); if (!czyObiekt(zSesji)) zSesji = null; } catch (e) { zSesji = null; }
+  const idInstancji = zSesji && /^[0-9a-f]{8,32}$/.test(String(zSesji.id || '')) ? zSesji.id : crypto.randomBytes(6).toString('hex');
+  const CIASTKO = 'ep_sesja_' + idInstancji;
+  const weryfikator = (sol) => crypto.scryptSync(cfg.haslo, Buffer.from(sol, 'hex'), 32).toString('hex');
+  let solSesji = null, weryfSesji = null;
   if (cfg.haslo) {
-    try {
-      const z = JSON.parse(fs.readFileSync(plikSesji, 'utf8'));
-      const teraz = Date.now();
-      if (z && z.haslo === znakHasla && czyObiekt(z.sesje)) {
-        Object.entries(z.sesje).sort((a, b) => (a[1].uzyto || 0) - (b[1].uzyto || 0))
+    const teraz = Date.now();
+    let zgodne = false;
+    if (zSesji && /^[0-9a-f]{32}$/.test(String(zSesji.sol || '')) && typeof zSesji.weryfikator === 'string') {
+      try { zgodne = crypto.timingSafeEqual(Buffer.from(weryfikator(zSesji.sol), 'hex'), Buffer.from(zSesji.weryfikator, 'hex')); } catch (e) { zgodne = false; }
+    }
+    if (zgodne) {
+      solSesji = zSesji.sol; weryfSesji = zSesji.weryfikator;
+      if (czyObiekt(zSesji.sesje)) {
+        Object.entries(zSesji.sesje).sort((a, b) => (a[1].uzyto || 0) - (b[1].uzyto || 0))
           .forEach(([k, v]) => { if (v && v.do > teraz && sesje.size < MAKS_SESJI) sesje.set(k, { do: v.do, uzyto: v.uzyto || 0 }); });
       }
-    } catch (e) { /* brak pliku albo inne hasło — sesje od zera */ }
+    } else {
+      solSesji = crypto.randomBytes(16).toString('hex'); weryfSesji = weryfikator(solSesji);
+      // inne hasło (albo plik z poprzedniej wersji): stare sesje są od razu usuwane z dysku
+      if (zSesji) zapiszSesjeTeraz();
+    }
+  } else if (zSesji && zSesji.sesje && Object.keys(zSesji.sesje).length) {
+    // hasło wyłączone: sesje tracą ważność (ponowne włączenie tego samego hasła ich nie przywraca)
+    try { zapiszAtomowo(plikSesji, JSON.stringify({ id: idInstancji, sesje: {} })); } catch (e) { /* ignore */ }
+  }
+  function zapiszSesjeTeraz() {
+    const out = {}; for (const [k, v] of sesje) out[k] = v;
+    try {
+      fs.mkdirSync(cfg.dataDir, { recursive: true });
+      zapiszAtomowo(plikSesji, JSON.stringify({ id: idInstancji, sol: solSesji, weryfikator: weryfSesji, sesje: out }));
+      try { fs.chmodSync(plikSesji, 0o600); } catch (e) { /* np. system plików bez uprawnień */ }
+    } catch (e) { log.error(`Nie udało się zapisać ${plikSesji}: ${e.message}`); }
   }
   let zapisSesji = null;
   function zapiszSesjeWkrotce() {
     if (zapisSesji) return;
-    zapisSesji = setTimeout(() => {
-      zapisSesji = null;
-      const out = {}; for (const [k, v] of sesje) out[k] = v;
-      try { zapiszAtomowo(plikSesji, JSON.stringify({ haslo: znakHasla, sesje: out })); } catch (e) { log.error(`Nie udało się zapisać ${plikSesji}: ${e.message}`); }
-    }, 2000);
+    zapisSesji = setTimeout(() => { zapisSesji = null; zapiszSesjeTeraz(); }, 2000);
     if (zapisSesji.unref) zapisSesji.unref();
   }
   /** hasło z nagłówka Basic (po dwukropku) albo null */
@@ -699,7 +724,8 @@ function stworzSerwer(cfg, log) {
     if (zp && (zp === '*' || zp.includes(adres))) {
       // ostatni wpis dopisało nasze proxy — wcześniejsze mógł podać sam klient
       const lista = String(xff || '').split(',').map((x) => x.trim()).filter(Boolean);
-      if (lista.length) return { klucz: normalizujAdres(lista[lista.length - 1]).slice(0, 100), nadawca: adres };
+      // przy liście adresów proxy nagłówek jest wiarygodny; przy „ufaj każdemu” liczy się też nadawca
+      if (lista.length) return { klucz: normalizujAdres(lista[lista.length - 1]).slice(0, 100), nadawca: zp === '*' ? adres : null };
     } else if (xff && !zgloszoneProxy.has(adres) && zgloszoneProxy.size < 20) {
       zgloszoneProxy.add(adres);
       log.warn(`Żądania z hasłem przychodzą przez serwer pośredniczący (proxy) z adresu ${adres}. Żeby błędne hasła były liczone osobno dla każdego urządzenia, ustaw EP_ZAUFANE_PROXY=${adres}`);
@@ -742,11 +768,15 @@ function stworzSerwer(cfg, log) {
     const https = /^https$/i.test(proto) || /(?:^|[;,\s])proto=(?:"?)https/i.test(String(req.headers.forwarded || ''));
     return `${CIASTKO}=${token}; Path=/; Max-Age=${Math.floor(SESJA_MS / 1000)}; HttpOnly; SameSite=Lax${https ? '; Secure' : ''}`;
   }
-  function licz(klucz, id, prog, teraz, zawsze) {
-    let p = proby.get(klucz);
+  function licz(mapa, klucz, id, prog, teraz, zawsze) {
+    let p = mapa.get(klucz);
     if (!p) {
-      if (proby.size >= 10000) for (const [k, v] of proby) if (v.blokadaDo <= teraz) proby.delete(k);
-      p = { n: 0, zle: new Set(), blokadaDo: 0, ostatnio: 0, zalogowano: 0 }; proby.set(klucz, p);
+      if (mapa.size >= 10000) {
+        // przepełnienie: wypadają najdawniej widziane, niezablokowane wpisy (nie wszystkie naraz)
+        const wolne = [...mapa].filter(([, v]) => v.blokadaDo <= teraz).sort((a, b) => a[1].ostatnio - b[1].ostatnio);
+        for (const [k] of wolne.slice(0, 1000)) mapa.delete(k);
+      }
+      p = { n: 0, zle: new Set(), blokadaDo: 0, ostatnio: 0, zalogowano: 0 }; mapa.set(klucz, p);
     }
     p.ostatnio = teraz;
     if (p.zle.has(id)) return; // to samo błędne hasło jeszcze raz — już policzone
@@ -762,10 +792,10 @@ function stworzSerwer(cfg, log) {
       }
     }
   }
-  function blokada(klucz, teraz) {
-    const p = proby.get(klucz);
+  function blokada(mapa, klucz, teraz, zapomnij) {
+    const p = mapa.get(klucz);
     if (!p) return 0;
-    if (p.blokadaDo <= teraz && teraz - p.ostatnio > ZAPOMNIJ_MS) { proby.delete(klucz); return 0; }
+    if (p.blokadaDo <= teraz && teraz - p.ostatnio > zapomnij) { mapa.delete(klucz); return 0; }
     return p.blokadaDo > teraz ? Math.ceil((p.blokadaDo - teraz) / 1000) : 0;
   }
   /** {ok:true, ciastko?} | {ok:false} (401) | {ok:false, blokada: sekundy} (429) */
@@ -776,7 +806,7 @@ function stworzSerwer(cfg, log) {
     if (!m) return { ok: false };
     const { klucz, nadawca } = kluczKlienta(req), teraz = Date.now();
     const kN = nadawca && nadawca !== klucz ? 'nadawca ' + nadawca : null;
-    const wstrzymane = Math.max(blokada(klucz, teraz), kN ? blokada(kN, teraz) : 0);
+    const wstrzymane = Math.max(blokada(proby, klucz, teraz, ZAPOMNIJ_MS), kN ? blokada(nadawcy, kN, teraz, ZAPOMNIJ_NADAWCE_MS) : 0);
     if (wstrzymane) return { ok: false, blokada: wstrzymane };
     const haslo = hasloZNaglowka(m[1]);
     const sk = haslo === null ? null : skrot(haslo);
@@ -785,8 +815,8 @@ function stworzSerwer(cfg, log) {
       return { ok: true, ciastko: nawigacjaPrzegladarki(req) ? nowaSesja(req) : null };
     }
     const id = sk ? sk.toString('base64', 0, 12) : '?';
-    licz(klucz, id, PROG_PROB, teraz, false);
-    if (kN) licz(kN, id, PROG_NADAWCA, teraz, true);
+    licz(proby, klucz, id, PROG_PROB, teraz, false);
+    if (kN) licz(nadawcy, kN, id, PROG_NADAWCA, teraz, true);
     return { ok: false };
   }
 
@@ -1067,7 +1097,7 @@ function stworzSerwer(cfg, log) {
   }
   function zatrzymaj() {
     if (heartbeat) clearInterval(heartbeat);
-    if (zapisSesji) { clearTimeout(zapisSesji); zapisSesji = null; const out = {}; for (const [k, v] of sesje) out[k] = v; try { if (cfg.haslo) zapiszAtomowo(plikSesji, JSON.stringify({ haslo: znakHasla, sesje: out })); } catch (e) { /* ignore */ } }
+    if (zapisSesji) { clearTimeout(zapisSesji); zapisSesji = null; if (cfg.haslo) zapiszSesjeTeraz(); }
     for (const res of klienciSse) { try { res.end(); } catch (e) { /* ignore */ } }
     klienciSse.clear();
   }

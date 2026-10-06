@@ -839,7 +839,7 @@ test('EP_HASLO: ciasteczko sesji po zalogowaniu omija blokadę; to samo złe has
     const ok = await zadanie(s2.port, { path: '/', headers: { ...basic('tajne'), ...nav } });
     assert.equal(ok.status, 200);
     const ck = String(ok.headers['set-cookie'] || '');
-    assert.match(ck, /^ep_sesja_[0-9a-f]{8}=[A-Za-z0-9_-]{20,64}; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax$/);
+    assert.match(ck, /^ep_sesja_[0-9a-f]{8,32}=[A-Za-z0-9_-]{20,64}; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax$/);
     ciastko = { Cookie: ck.split(';')[0] };
     // przeglądarka z zapamiętanym starym hasłem (np. po zmianie hasła) ponawia je w kółko — to jedna pomyłka
     for (let i = 0; i < 20; i++) assert.equal((await st(basic('stare'))).status, 401);
@@ -862,12 +862,21 @@ test('EP_HASLO: ciasteczko sesji po zalogowaniu omija blokadę; to samo złe has
     assert.equal((await zadanie(s3.port, { path: '/api/ping', headers: ciastko })).status, 200, 'sesja przetrwała restart');
     assert.doesNotMatch(fs.readFileSync(path.join(d, 'sesje.json'), 'utf8'), new RegExp(ciastko.Cookie.split('=')[1]), 'plik nie zawiera tokenów');
   } finally { await s3.zatrzymaj(); }
-  // zmiana hasła unieważnia sesje
+  const plik = JSON.parse(fs.readFileSync(path.join(d, 'sesje.json'), 'utf8'));
+  assert.equal(plik.haslo, undefined, 'bez szybkiego skrótu hasła w pliku');
+  assert.match(plik.sol, /^[0-9a-f]{32}$/);
+  assert.notEqual(plik.weryfikator, require('crypto').createHash('sha256').update('tajne').digest('hex'));
+  assert.equal(ciastko.Cookie.split('=')[0], `ep_sesja_${plik.id}`, 'nazwa ciasteczka z losowego identyfikatora instancji (stała między restartami)');
+  // zmiana hasła unieważnia sesje — także po powrocie do starego hasła
   const s4 = await uruchomSerwer({ dataDir: d, env: { EP_HASLO: 'nowe' } });
   try {
     assert.equal((await zadanie(s4.port, { path: '/api/ping', headers: ciastko })).status, 401, 'po zmianie hasła stara sesja nie działa');
     assert.equal((await zadanie(s4.port, { path: '/api/ping', headers: basic('tajne') })).status, 401);
   } finally { await s4.zatrzymaj(); }
+  const s5 = await uruchomSerwer({ dataDir: d, env: { EP_HASLO: 'tajne' } });
+  try {
+    assert.equal((await zadanie(s5.port, { path: '/api/ping', headers: ciastko })).status, 401, 'powrót do starego hasła nie przywraca starych sesji');
+  } finally { await s5.zatrzymaj(); }
 });
 
 test('EP_ZAUFANE_PROXY: błędne hasła liczone osobno dla klientów z X-Forwarded-For; podrabianie nagłówka z pominięciem proxy nie znosi blokady', async () => {
@@ -881,7 +890,7 @@ test('EP_ZAUFANE_PROXY: błędne hasła liczone osobno dla klientów z X-Forward
     const nav = { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html' };
     const inny = await st(s2.port, '10.0.0.1', { ...basic('tajne'), ...nav });
     assert.equal(inny.status, 200, 'inni użytkownicy za tym samym proxy logują się normalnie');
-    assert.match(String(inny.headers['set-cookie']), /^ep_sesja_[0-9a-f]{8}=/);
+    assert.match(String(inny.headers['set-cookie']), /^ep_sesja_[0-9a-f]{8,32}=/);
     assert.doesNotMatch(String(inny.headers['set-cookie']), /Secure/);
     const https = await st(s2.port, '10.0.0.2', { ...basic('tajne'), ...nav, 'X-Forwarded-Proto': 'https' });
     assert.match(String(https.headers['set-cookie']), /; Secure$/, 'za proxy HTTPS ciasteczko tylko po HTTPS');
@@ -897,6 +906,12 @@ test('EP_ZAUFANE_PROXY: błędne hasła liczone osobno dla klientów z X-Forward
     assert.equal((await st(s3.port, '10.0.0.7', basic('tajne'))).status, 429, 'nadawca spoza listy proxy — X-Forwarded-For pominięty');
     assert.match(s3.bledy() + s3.wyjscie(), /ustaw EP_ZAUFANE_PROXY=127\.0\.0\.1/, 'serwer podpowiada adres proxy');
   } finally { await s3.zatrzymaj(); }
+  // lista adresów proxy: nagłówek wiarygodny, pomyłki wielu osób nie blokują nowych logowań wszystkim
+  const s4 = await uruchomSerwer({ dataDir: d, env: { EP_HASLO: 'tajne', EP_BLOKADA_HASLA_MS: '60000', EP_ZAUFANE_PROXY: '127.0.0.1' } });
+  try {
+    for (let k = 0; k < 15; k++) for (let i = 0; i < 4; i++) assert.equal((await st(s4.port, `10.1.${k}.1`, basic(`literowka${k}-${i}`))).status, 401);
+    assert.equal((await st(s4.port, '10.1.99.1', basic('tajne'))).status, 200, '60 pomyłek 15 osób (po 4) nie blokuje nowego urządzenia');
+  } finally { await s4.zatrzymaj(); }
   assert.equal(konfiguracja({ EP_ZAUFANE_PROXY: '0' }, []).zaufaneProxy, null);
   assert.deepEqual(konfiguracja({ EP_ZAUFANE_PROXY: '::ffff:172.17.0.1, 10.0.0.1' }, []).zaufaneProxy, ['172.17.0.1', '10.0.0.1']);
 });
